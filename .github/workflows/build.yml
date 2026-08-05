@@ -7,6 +7,7 @@ permissions:
 env:
   RSYNC_BIN: rip-rsync
   SFTP_BIN: rip-sftp
+  ARTIFACT_PREFIX: backup-client
 jobs:
   build:
     name: Build binaries
@@ -55,7 +56,7 @@ jobs:
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ env.RSYNC_BIN }}-${{ github.ref_name }}-${{ matrix.GOOS }}-${{ matrix.GOARCH }}
+          name: ${{ env.ARTIFACT_PREFIX }}-${{ github.ref_name }}-${{ matrix.GOOS }}-${{ matrix.GOARCH }}
           path: |
             ${{ env.RSYNC_BIN }}-*.tar.gz
             ${{ env.RSYNC_BIN }}-*.zip
@@ -71,9 +72,7 @@ jobs:
       - name: Download workflow artifacts
         uses: actions/download-artifact@v8
         with:
-          pattern: |
-            ${{ env.RSYNC_BIN }}-${{ github.ref_name }}-*
-            ${{ env.SFTP_BIN }}-${{ github.ref_name }}-*
+          pattern: ${{ env.ARTIFACT_PREFIX }}-${{ github.ref_name }}-*
           merge-multiple: true
       - name: Upload release artifacts
         run: gh release upload "$GITHUB_REF_NAME" ${{ env.RSYNC_BIN }}-* ${{ env.SFTP_BIN }}-*
