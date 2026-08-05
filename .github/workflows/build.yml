@@ -1,0 +1,83 @@
+name: Build
+on:
+  release:
+    types: [published]
+permissions:
+  contents: read
+env:
+  RSYNC_BIN: rip-rsync
+  SFTP_BIN: rip-sftp
+jobs:
+  build:
+    name: Build binaries
+    strategy:
+      matrix:
+        include:
+          - {GOOS: linux, GOARCH: amd64}
+          - {GOOS: linux, GOARCH: arm64}
+          - {GOOS: darwin, GOARCH: amd64}
+          - {GOOS: darwin, GOARCH: arm64}
+          - {GOOS: linux, GOARCH: arm, GOARM: 6}
+          - {GOOS: freebsd, GOARCH: amd64}
+          - {GOOS: windows, GOARCH: amd64}
+    runs-on: ubuntu-latest
+    environment: "Build, release binaries"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: 1.x
+      - name: Build binaries
+        run: |
+          VERSION="$(git describe --tags --always)"
+          DIR="dist"
+          mkdir -p "$DIR"
+          EXTENSION=""
+          [ "$GOOS" = "windows" ] && EXTENSION=".exe"
+          [ -n "${{ matrix.GOARM }}" ] && export GOARM="${{ matrix.GOARM }}"
+
+          CGO_ENABLED=0 go build -o "$DIR/${{ env.RSYNC_BIN }}$EXTENSION" -trimpath ./cmd/rsync
+          CGO_ENABLED=0 go build -o "$DIR/${{ env.SFTP_BIN }}$EXTENSION" -trimpath ./cmd/sftp
+
+          for BIN in ${{ env.RSYNC_BIN }} ${{ env.SFTP_BIN }}; do
+            if [ "$GOOS" = "windows" ]; then
+              zip -j "$BIN-$VERSION-$GOOS-$GOARCH.zip" "$DIR/$BIN$EXTENSION"
+            else
+              tar -cvzf "$BIN-$VERSION-$GOOS-$GOARCH.tar.gz" -C "$DIR" "$BIN$EXTENSION"
+            fi
+          done
+        env:
+          GOOS: ${{ matrix.GOOS }}
+          GOARCH: ${{ matrix.GOARCH }}
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.RSYNC_BIN }}-${{ github.ref_name }}-${{ matrix.GOOS }}-${{ matrix.GOARCH }}
+          path: |
+            ${{ env.RSYNC_BIN }}-*.tar.gz
+            ${{ env.RSYNC_BIN }}-*.zip
+            ${{ env.SFTP_BIN }}-*.tar.gz
+            ${{ env.SFTP_BIN }}-*.zip
+  upload:
+    name: Upload release binaries
+    needs: build
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download workflow artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: |
+            ${{ env.RSYNC_BIN }}-${{ github.ref_name }}-*
+            ${{ env.SFTP_BIN }}-${{ github.ref_name }}-*
+          merge-multiple: true
+      - name: Upload release artifacts
+        run: gh release upload "$GITHUB_REF_NAME" ${{ env.RSYNC_BIN }}-* ${{ env.SFTP_BIN }}-*
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}

@@ -3,14 +3,12 @@ module github.com/caasmo/restinpieces-backup-client
 go 1.25.0
 
 require (
-	github.com/caasmo/restinpieces v0.14.0
+	github.com/caasmo/restinpieces v0.15.0
 	github.com/gokrazy/rsync v0.3.4
 	github.com/pkg/sftp v1.13.9
 	golang.org/x/crypto v0.46.0
 	zombiezen.com/go/sqlite v1.4.2
 )
-
-replace github.com/caasmo/restinpieces => ../restinpieces
 
 require (
 	github.com/BurntSushi/toml v1.6.0 // indirect
