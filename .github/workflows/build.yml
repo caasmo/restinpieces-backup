@@ -18,7 +18,6 @@ jobs:
           - {GOOS: darwin, GOARCH: amd64}
           - {GOOS: darwin, GOARCH: arm64}
           - {GOOS: linux, GOARCH: arm, GOARM: 6}
-          - {GOOS: freebsd, GOARCH: amd64}
           - {GOOS: windows, GOARCH: amd64}
     runs-on: ubuntu-latest
     environment: "Build, release binaries"
