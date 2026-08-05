@@ -1,15 +1,15 @@
+// Package ssh provides the SSH connection helpers shared by the backup
+// client commands: environment configuration, the host-key-pinned
+// dial, and remote command sessions.
 package ssh
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 
-	"github.com/caasmo/restinpieces-backup-client/transport"
 	cryptossh "golang.org/x/crypto/ssh"
 )
 
@@ -50,21 +50,11 @@ func ConfigFromEnv() (Config, error) {
 	return cfg, nil
 }
 
-// Transport implements transport.Transport over an SSH connection.
-type Transport struct {
-	client  *cryptossh.Client
-	session *cryptossh.Session
-	stdin   io.WriteCloser
-}
-
-// Verify interface compliance.
-var _ transport.Transport = (*Transport)(nil)
-
-// New dials the SSH server and returns a Transport that owns the
-// connection. The host key is pinned: HostKeyPath must point to the
+// Dial authenticates with the configured private key and returns an
+// SSH client. The host key is pinned: HostKeyPath must point to the
 // server's public host key (provisioned out-of-band), and a dial
 // against any other host key fails.
-func New(cfg Config) (*Transport, error) {
+func Dial(cfg Config) (*cryptossh.Client, error) {
 	key, err := os.ReadFile(cfg.PrivateKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("unable to read private key: %w", err)
@@ -100,20 +90,24 @@ func New(cfg Config) (*Transport, error) {
 		return nil, fmt.Errorf("failed to dial ssh: %w", err)
 	}
 
-	return &Transport{client: client}, nil
+	return client, nil
 }
 
-// Connect opens an SSH session, starts the remote rsync binary in
-// server mode with the given server args, and returns the io.ReadWriter
-// the client protocol runs over. On partial failure (session created
-// but pipe setup fails), Connect closes the session before returning.
-// The context is not used here: dialing already happened in New with a
-// fixed timeout, and cancellation of the transfer is handled by
-// rsyncClient.Run.
-func (t *Transport) Connect(_ context.Context, serverArgs []string) (io.ReadWriter, error) {
-	session, err := t.client.NewSession()
+// Session is an SSH session running a remote command, with its stdin
+// and stdout pipes wired.
+type Session struct {
+	session *cryptossh.Session
+	stdin   io.WriteCloser
+	stdout  io.Reader
+}
+
+// NewSession opens a new session on client, wires its stdin, stdout
+// and stderr pipes (stderr routed to the caller's stderr), and starts
+// the given remote command. Release the session with Close.
+func NewSession(client *cryptossh.Client, cmd string) (*Session, error) {
+	session, err := client.NewSession()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create SSH session for rsync: %w", err)
+		return nil, fmt.Errorf("failed to create SSH session: %w", err)
 	}
 
 	stdin, err := session.StdinPipe()
@@ -130,58 +124,53 @@ func (t *Transport) Connect(_ context.Context, serverArgs []string) (io.ReadWrit
 
 	session.Stderr = os.Stderr
 
-	remoteCmd := fmt.Sprintf("rsync %s", strings.Join(serverArgs, " "))
-	err = session.Start(remoteCmd)
+	err = session.Start(cmd)
 	if err != nil {
 		closeErr := session.Close()
-		return nil, errors.Join(fmt.Errorf("failed to start remote rsync: %w", err), closeErr)
+		return nil, errors.Join(fmt.Errorf("failed to start remote command: %w", err), closeErr)
 	}
 
-	t.session = session
-	t.stdin = stdin
-
-	rw := &struct {
-		io.Reader
-		io.Writer
-	}{Reader: stdout, Writer: stdin}
-
-	return rw, nil
+	return &Session{session: session, stdin: stdin, stdout: stdout}, nil
 }
 
-// Wait closes stdin to signal the remote rsync process that the
-// transfer is done, then blocks until the remote command exits.
-func (t *Transport) Wait() error {
+// Pipe returns the bidirectional pipe of the remote command: Read
+// reads its stdout, Write writes to its stdin.
+func (s *Session) Pipe() io.ReadWriter {
+	return &struct {
+		io.Reader
+		io.Writer
+	}{Reader: s.stdout, Writer: s.stdin}
+}
+
+// Wait closes stdin to signal the remote command that the input is
+// done, then blocks until the command exits.
+func (s *Session) Wait() error {
 	var errs []error
-	if t.stdin != nil {
-		closeErr := t.stdin.Close()
+	if s.stdin != nil {
+		closeErr := s.stdin.Close()
 		errs = append(errs, closeErr)
-		t.stdin = nil
+		s.stdin = nil
 	}
-	if t.session != nil {
-		waitErr := t.session.Wait()
+	if s.session != nil {
+		waitErr := s.session.Wait()
 		errs = append(errs, waitErr)
-		t.session = nil
+		s.session = nil
 	}
 	return errors.Join(errs...)
 }
 
-// Close releases all resources: session and SSH connection. Idempotent.
-func (t *Transport) Close() error {
+// Close releases the session and its pipes. Idempotent.
+func (s *Session) Close() error {
 	var errs []error
-	if t.stdin != nil {
-		closeErr := t.stdin.Close()
+	if s.stdin != nil {
+		closeErr := s.stdin.Close()
 		errs = append(errs, closeErr)
-		t.stdin = nil
+		s.stdin = nil
 	}
-	if t.session != nil {
-		closeErr := t.session.Close()
+	if s.session != nil {
+		closeErr := s.session.Close()
 		errs = append(errs, closeErr)
-		t.session = nil
-	}
-	if t.client != nil {
-		closeErr := t.client.Close()
-		errs = append(errs, closeErr)
-		t.client = nil
+		s.session = nil
 	}
 	return errors.Join(errs...)
 }

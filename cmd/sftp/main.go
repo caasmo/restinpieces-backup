@@ -13,8 +13,9 @@ import (
 	"sort"
 	"time"
 
+	"github.com/caasmo/restinpieces-backup-client/ssh"
 	"github.com/pkg/sftp"
-	"golang.org/x/crypto/ssh"
+	cryptossh "golang.org/x/crypto/ssh"
 	"zombiezen.com/go/sqlite"
 )
 
@@ -24,6 +25,7 @@ type Config struct {
 	SSHHost           string
 	SSHPort           string
 	SSHPrivateKeyPath string
+	SSHHostKeyPath    string
 	RemoteBackupDir   string
 	LocalBackupDir    string
 }
@@ -35,6 +37,7 @@ func main() {
 		SSHHost:           "machine-b.example.com",
 		SSHPort:           "22",
 		SSHPrivateKeyPath: "/home/user/.ssh/id_rsa",
+		SSHHostKeyPath:    "/etc/caasmo/ssh_host_ed25519_key.pub",
 		RemoteBackupDir:   "/var/caasmo/backups",
 		LocalBackupDir:    "/home/lipo/backups",
 	}
@@ -42,11 +45,14 @@ func main() {
 	ctx := context.Background()
 	slog.Info("Starting pullfile client")
 
-	sftpClient, err := setupSftpClient(cfg)
+	sftpClient, sshConn, err := setupSftpClient(cfg)
 	if err != nil {
 		slog.Error("Failed to set up SFTP client", "error", err)
 		os.Exit(1)
 	}
+	defer func() {
+		_ = sshConn.Close()
+	}()
 	defer func() {
 		_ = sftpClient.Close()
 	}()
@@ -73,38 +79,25 @@ func main() {
 	slog.Info("Backup verification successful! The backup is valid.", "path", localPath)
 }
 
-func setupSftpClient(cfg Config) (*sftp.Client, error) {
-	key, err := os.ReadFile(cfg.SSHPrivateKeyPath)
+func setupSftpClient(cfg Config) (*sftp.Client, *cryptossh.Client, error) {
+	conn, err := ssh.Dial(ssh.Config{
+		User:           cfg.SSHUser,
+		Host:           cfg.SSHHost,
+		Port:           cfg.SSHPort,
+		PrivateKeyPath: cfg.SSHPrivateKeyPath,
+		HostKeyPath:    cfg.SSHHostKeyPath,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("unable to read private key: %w", err)
-	}
-
-	signer, err := ssh.ParsePrivateKey(key)
-	if err != nil {
-		return nil, fmt.Errorf("unable to parse private key: %w", err)
-	}
-
-	sshConfig := &ssh.ClientConfig{
-		User: cfg.SSHUser,
-		Auth: []ssh.AuthMethod{
-			ssh.PublicKeys(signer),
-		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         15 * time.Second,
-	}
-
-	addr := fmt.Sprintf("%s:%s", cfg.SSHHost, cfg.SSHPort)
-	conn, err := ssh.Dial("tcp", addr, sshConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial ssh: %w", err)
+		return nil, nil, fmt.Errorf("failed to dial ssh: %w", err)
 	}
 
 	client, err := sftp.NewClient(conn)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create sftp client: %w", err)
+		closeErr := conn.Close()
+		return nil, nil, errors.Join(fmt.Errorf("failed to create sftp client: %w", err), closeErr)
 	}
 
-	return client, nil
+	return client, conn, nil
 }
 
 // findLatestBackup lists files in the remote directory and returns the name of the most recent one.

@@ -5,22 +5,23 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
+	"strings"
 
-	"github.com/caasmo/restinpieces-backup-client/transport"
-	"github.com/caasmo/restinpieces-backup-client/transport/local"
-	sshtransport "github.com/caasmo/restinpieces-backup-client/transport/ssh"
+	"github.com/caasmo/restinpieces-backup-client/ssh"
 	ripbackup "github.com/caasmo/restinpieces/backup"
 	"github.com/gokrazy/rsync/rsyncclient"
 	"zombiezen.com/go/sqlite"
 )
 
 func main() {
-	useLocal := flag.Bool("l", false, "run rsync on the same machine (local transport) instead of over SSH")
-	flag.BoolVar(useLocal, "local", false, "run rsync on the same machine (local transport) instead of over SSH")
+	useLocal := flag.Bool("l", false, "run rsync on the same machine instead of over SSH")
+	flag.BoolVar(useLocal, "local", false, "run rsync on the same machine instead of over SSH")
 	flag.Parse()
 
 	if err := run(*useLocal); err != nil {
@@ -29,8 +30,9 @@ func main() {
 	}
 }
 
-// run reads configuration, constructs the selected transport, and
-// delegates to the transport-agnostic backup function.
+// run reads configuration, creates the rsync client and its server
+// arguments, dispatches to the SSH or local connection path, logs the
+// transfer statistics, and runs the post-transfer verification.
 func run(useLocal bool) error {
 	sourceDir := os.Getenv("RIP_BCK_SOURCE_DIR")
 	destDir := os.Getenv("RIP_BCK_DEST_DIR")
@@ -44,43 +46,12 @@ func run(useLocal bool) error {
 
 	ctx := context.Background()
 
-	// Transport selection: the -l/--local flag selects the local
-	// transport (rsync on the same machine); the default is the SSH
-	// transport.
-	var t transport.Transport
-	switch {
-	case useLocal:
-		t = local.New()
-	default:
-		cfg, err := sshtransport.ConfigFromEnv()
-		if err != nil {
-			return fmt.Errorf("failed to read SSH config: %w", err)
-		}
-		t, err = sshtransport.New(cfg)
-		if err != nil {
-			return fmt.Errorf("failed to connect SSH: %w", err)
-		}
-	}
-
-	return backup(ctx, t, sourceDir, destDir)
-}
-
-// backup is the transport-agnostic core: it creates the rsync client,
-// connects via the transport, runs the rsync protocol, waits for the
-// server process, and verifies the received databases. One defer t.Close()
-// covers every return path.
-func backup(ctx context.Context, t transport.Transport, sourceDir, destDir string) (err error) {
-	defer func() {
-		closeErr := t.Close()
-		err = errors.Join(err, closeErr)
-	}()
-
-	slog.Info("Starting rsync backup client")
-
-	err = os.MkdirAll(destDir, 0755)
+	err := os.MkdirAll(destDir, 0755)
 	if err != nil {
 		return fmt.Errorf("failed to create destination directory: %w", err)
 	}
+
+	slog.Info("Starting rsync backup client")
 
 	// Create the rsync client. We do NOT use WithSender() because we are
 	// the receiver (pulling from the server to local disk).
@@ -105,43 +76,16 @@ func backup(ctx context.Context, t transport.Transport, sourceDir, destDir strin
 	globPath := path.Join(sourceDir, ripbackup.LatestGlob)
 	serverArgs := rsyncClient.ServerCommandOptions(globPath)
 
-	// Connect starts the rsync server process (remote via SSH, local via
-	// exec.Command) and returns the io.ReadWriter the protocol runs over.
-	rw, err := t.Connect(ctx, serverArgs)
+	// Connection selection: the -l/--local flag runs rsync on the same
+	// machine; the default connects over SSH.
+	var result *rsyncclient.Result
+	if useLocal {
+		result, err = backupLocal(ctx, rsyncClient, destDir, globPath, serverArgs)
+	} else {
+		result, err = backupSSH(ctx, rsyncClient, destDir, globPath, serverArgs)
+	}
 	if err != nil {
-		return fmt.Errorf("failed to connect transport: %w", err)
-	}
-
-	// Pass the destination DIRECTORY: the receiver treats it as a
-	// directory (verified in clientmaincmd.go: os.MkdirAll + os.OpenRoot)
-	// and writes each file into it under its source name.
-	result, err := rsyncClient.Run(ctx, rw, []string{destDir})
-	if err != nil {
-		return fmt.Errorf("rsync transfer failed: %w", err)
-	}
-
-	// Zero-match glob is a failure, not a success: when no latest-*.db
-	// exists, the shell leaves the literal pattern in place, the sender
-	// transfers zero files, and the protocol completes without error.
-	// The sender's final stats report the total size of files (the sum
-	// of the file-list lengths), which is zero iff the file list was
-	// empty — so a zero size means nothing was received, even when
-	// stale files from a database removed from the server's config
-	// linger in the destination directory and would make the local glob
-	// match. Stats is always non-nil after a successful Run (verified
-	// in source v0.3.4: Run wraps the stats from maincmd.ClientRun
-	// into &Result{Stats}).
-	if result == nil || result.Stats == nil || result.Stats.Size == 0 {
-		return fmt.Errorf("no backup files received: server glob matched nothing: %s", globPath)
-	}
-
-	// Wait closes stdin and blocks until the server process exits. A
-	// nonzero exit after a successful protocol run is a server-side
-	// failure (e.g. the sender could not read a matched file), so the
-	// run fails instead of silently accepting the transfer.
-	waitErr := t.Wait()
-	if waitErr != nil {
-		return fmt.Errorf("rsync server process exited with error: %w", waitErr)
+		return err
 	}
 
 	slog.Info("rsync transfer completed",
@@ -158,10 +102,136 @@ func backup(ctx context.Context, t transport.Transport, sourceDir, destDir strin
 	return nil
 }
 
+// backupSSH dials the SSH server, starts the remote rsync binary in
+// server mode over a session, and delegates to transfer.
+func backupSSH(ctx context.Context, rsyncClient *rsyncclient.Client, destDir, globPath string, serverArgs []string) (result *rsyncclient.Result, err error) {
+	cfg, err := ssh.ConfigFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read SSH config: %w", err)
+	}
+
+	client, err := ssh.Dial(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to dial ssh: %w", err)
+	}
+	defer func() {
+		closeErr := client.Close()
+		err = errors.Join(err, closeErr)
+	}()
+
+	// Args are joined unquoted: session.Start runs the command through
+	// the remote login shell, which splits it (and expands the glob).
+	// The source directory must be free of shell metacharacters.
+	remoteCmd := fmt.Sprintf("rsync %s", strings.Join(serverArgs, " "))
+	session, err := ssh.NewSession(client, remoteCmd)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		closeErr := session.Close()
+		err = errors.Join(err, closeErr)
+	}()
+
+	return transfer(ctx, rsyncClient, destDir, globPath, session.Pipe(), session.Wait)
+}
+
+// backupLocal starts the local rsync binary in server mode and
+// delegates to transfer.
+func backupLocal(ctx context.Context, rsyncClient *rsyncclient.Client, destDir, globPath string, serverArgs []string) (result *rsyncclient.Result, err error) {
+	cmd := exec.CommandContext(ctx, "rsync", serverArgs...)
+	cmd.Stderr = os.Stderr
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stdin pipe: %w", err)
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("failed to get stdout pipe: %w", err), stdin.Close())
+	}
+
+	err = cmd.Start()
+	if err != nil {
+		// os/exec already closed the parent-side pipes on failure
+		// (Cmd.Start closes parentIOPipes when the process did not start).
+		return nil, fmt.Errorf("failed to start local rsync: %w", err)
+	}
+
+	rw := &struct {
+		io.Reader
+		io.Writer
+	}{Reader: stdout, Writer: stdin}
+
+	// wait closes stdin to signal the local rsync process that the
+	// transfer is done, then blocks until the process exits.
+	wait := func() error {
+		var errs []error
+		closeErr := stdin.Close()
+		errs = append(errs, closeErr)
+		waitErr := cmd.Wait()
+		errs = append(errs, waitErr)
+		cmd = nil
+		return errors.Join(errs...)
+	}
+
+	// Kill the local rsync process if the transfer failed before wait
+	// could reap it. The protocol failed, so stdin EOF cannot be relied
+	// on for graceful termination — SIGKILL is the deterministic teardown.
+	defer func() {
+		if cmd != nil {
+			killErr := cmd.Process.Kill()
+			reapErr := cmd.Wait() // reap the killed process, prevent zombie
+			err = errors.Join(err, killErr, reapErr)
+			cmd = nil
+		}
+	}()
+
+	return transfer(ctx, rsyncClient, destDir, globPath, rw, wait)
+}
+
+// transfer runs the rsync protocol over rw and waits for the server
+// process to exit, returning the transfer statistics.
+func transfer(ctx context.Context, rsyncClient *rsyncclient.Client, destDir, globPath string, rw io.ReadWriter, wait func() error) (*rsyncclient.Result, error) {
+	// Pass the destination DIRECTORY: the receiver treats it as a
+	// directory (verified in clientmaincmd.go: os.MkdirAll + os.OpenRoot)
+	// and writes each file into it under its source name.
+	result, err := rsyncClient.Run(ctx, rw, []string{destDir})
+	if err != nil {
+		return nil, fmt.Errorf("rsync transfer failed: %w", err)
+	}
+
+	// Zero-match glob is a failure, not a success: when no latest-*.db
+	// exists, the shell leaves the literal pattern in place, the sender
+	// transfers zero files, and the protocol completes without error.
+	// The sender's final stats report the total size of files (the sum
+	// of the file-list lengths), which is zero iff the file list was
+	// empty — so a zero size means nothing was received, even when
+	// stale files from a database removed from the server's config
+	// linger in the destination directory and would make the local glob
+	// match. Stats is always non-nil after a successful Run (verified
+	// in source v0.3.4: Run wraps the stats from maincmd.ClientRun
+	// into &Result{Stats}).
+	if result == nil || result.Stats == nil || result.Stats.Size == 0 {
+		return nil, fmt.Errorf("no backup files received: server glob matched nothing: %s", globPath)
+	}
+
+	// Wait closes stdin and blocks until the server process exits. A
+	// nonzero exit after a successful protocol run is a server-side
+	// failure (e.g. the sender could not read a matched file), so the
+	// run fails instead of silently accepting the transfer.
+	waitErr := wait()
+	if waitErr != nil {
+		return nil, fmt.Errorf("rsync server process exited with error: %w", waitErr)
+	}
+
+	return result, nil
+}
+
 // verifyBackup sanity-checks the received files: at least one latest-*
 // file must be present in the destination directory, none may be empty,
 // and every file must pass the SQLite integrity check. The zero-match
-// failure itself is detected in backup() from the transfer stats (total
+// failure itself is detected by transfer from the transfer stats (total
 // size zero means the sender's file list was empty); this glob check is
 // the sanity check that the files actually landed in the destination
 // directory. Verification is deliberately non-cancellable: it is a
@@ -191,7 +261,7 @@ func verifyBackup(destDir string) error {
 			continue
 		}
 
-		err = verifyIntegrity(localPath)
+		err = verifySqliteIntegrity(localPath)
 		if err != nil {
 			return fmt.Errorf("backup verification failed post rsync: %w", err)
 		}
@@ -205,7 +275,7 @@ func verifyBackup(destDir string) error {
 	return nil
 }
 
-func verifyIntegrity(dbPath string) (err error) {
+func verifySqliteIntegrity(dbPath string) (err error) {
 	conn, err := sqlite.OpenConn(dbPath, sqlite.OpenReadOnly)
 	if err != nil {
 		return fmt.Errorf("failed to open database for verification: %w", err)
