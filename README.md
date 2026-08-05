@@ -2,18 +2,16 @@
 
 Client side of the simple default [restinpieces](https://github.com/caasmo/restinpieces) backup system. If you want point-in-time recovery, use the litestream package — see [restinpieces-litestream](https://github.com/caasmo/restinpieces-litestream).
 
-The backup system follows a two-step push-pull design: the **server side** — creating server local snapshots via a background job — is built into restinpieces itself (see [doc/backup.md](https://github.com/caasmo/restinpieces/blob/master/doc/backup.md)). This repository provides the **client side**: one-shot binaries that run in a client machine and pull the backups to a local machine and verify their integrity.
+The backup system follows a two-step push-pull design: the **server side** — creating server local snapshots via a background job — is built into restinpieces itself (see [doc/backup.md](https://github.com/caasmo/restinpieces/blob/master/doc/backup.md)). This repository provides the **client side**: one-shot binaries that run in a client machine and pull the backups and verify their integrity.
 
 Two commands are provided:
 
 - [`cmd/rsync`](#rsync-command-cmdrsync) — pulls the `latest-*.db` hard links via the rsync protocol (over SSH, or locally), then verifies every received database with `PRAGMA integrity_check`.
 - [`cmd/sftp`](#sftp-command-cmdsftp) — pulls the compressed snapshot archives (`.bck.gz`) over SFTP, decompresses, and verifies with `PRAGMA integrity_check`.
 
-Both commands share the host-key-pinned SSH dialing and the SQLite integrity verification from the `ssh` package.
-
 ## rsync command (`cmd/rsync`)
 
-The rsync client runs as the receiver: it starts the `rsync` binary in server (sender) mode — remotely over SSH, or locally on the same machine — and pulls every file matching the shared contract glob `latest-*.db` (the `latest-<backupID>.db` hard links the server maintains) from the server's backup directory into a local destination directory. `rsyncclient` writes each received file to a temp file and atomically renames it on success, so a failed or interrupted transfer never leaves a partial database behind. After the transfer, every received file must pass `PRAGMA integrity_check`; empty files are deleted and fail the run.
+The rsync client runs as the receiver: it starts the `rsync` binary in server (sender) mode — over SSH, or locally on the same machine with `-l` — and pulls every `latest-*.db` file (the `latest-<backupID>.db` hard links the server maintains) into a local destination directory. Files are written atomically (temp file + rename), and every received database must pass `PRAGMA integrity_check`.
 
 Build:
 
@@ -21,7 +19,7 @@ Build:
 go build -o backup-client ./cmd/rsync
 ```
 
-The machine that runs the rsync server side (the remote host in SSH mode, the local machine in local mode) must have an `rsync` binary in PATH — the gokrazy rsync server or a classic rsync.
+The machine that runs the rsync server side (the remote host in SSH mode, the local machine in local mode) must have an rsync-compatible binary in PATH.
 
 ### Environment variables
 
