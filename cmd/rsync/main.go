@@ -120,8 +120,12 @@ func backupSSH(ctx context.Context, rsyncClient *rsyncclient.Client, destDir, gl
 	}()
 
 	// Args are joined unquoted: session.Start runs the command through
-	// the remote login shell, which splits it (and expands the glob).
-	// The source directory must be free of shell metacharacters.
+	// the remote login shell, which splits it and expands the source
+	// glob (latest-*.db) into the concrete files the sender transfers.
+	// On zero matches the shell leaves the literal pattern in place,
+	// which the sender then fails on. The source directory must be free
+	// of shell metacharacters. backupLocal performs the same expansion
+	// in Go, because its exec.Command runs the binary without a shell.
 	remoteCmd := fmt.Sprintf("rsync %s", strings.Join(serverArgs, " "))
 	session, err := ssh.NewSession(client, remoteCmd)
 	if err != nil {
@@ -138,6 +142,23 @@ func backupSSH(ctx context.Context, rsyncClient *rsyncclient.Client, destDir, gl
 // backupLocal starts the local rsync binary in server mode and
 // delegates to transfer.
 func backupLocal(ctx context.Context, rsyncClient *rsyncclient.Client, destDir, globPath string, serverArgs []string) (result *rsyncclient.Result, err error) {
+	// exec.Command runs the rsync binary without a shell, so the source
+	// glob in serverArgs would reach the sender literally and fail. The
+	// SSH path gets its expansion from the remote login shell
+	// (backupSSH); here the same expansion happens in Go. The glob is
+	// the trailing serverArgs element: ServerCommandOptions appends the
+	// source path last, after the server options and the "." module
+	// marker. Zero matches fail before the process is spawned.
+	matches, err := filepath.Glob(globPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to glob source directory: %w", err)
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("no backup files received: server glob matched nothing: %s", globPath)
+	}
+
+	serverArgs = append(serverArgs[:len(serverArgs)-1], matches...)
+
 	cmd := exec.CommandContext(ctx, "rsync", serverArgs...)
 	cmd.Stderr = os.Stderr
 
@@ -201,17 +222,18 @@ func transfer(ctx context.Context, rsyncClient *rsyncclient.Client, destDir, glo
 		return nil, fmt.Errorf("rsync transfer failed: %w", err)
 	}
 
-	// Zero-match glob is a failure, not a success: when no latest-*.db
-	// exists, the shell leaves the literal pattern in place, the sender
-	// transfers zero files, and the protocol completes without error.
-	// The sender's final stats report the total size of files (the sum
-	// of the file-list lengths), which is zero iff the file list was
-	// empty — so a zero size means nothing was received, even when
-	// stale files from a database removed from the server's config
-	// linger in the destination directory and would make the local glob
-	// match. Stats is always non-nil after a successful Run (verified
-	// in source v0.3.4: Run wraps the stats from maincmd.ClientRun
-	// into &Result{Stats}).
+	// Zero-match glob is a failure, not a success: the sender must
+	// transfer at least one file. Both paths detect the empty file list
+	// before this check — the local path in backupLocal (Go glob before
+	// spawning), the SSH path in the sender, which fails on the literal
+	// pattern the shell leaves in place — so this size check is the
+	// final guard. The sender's final stats report the total size of
+	// files (the sum of the file-list lengths), which is zero iff the
+	// file list was empty, even when stale files from a database
+	// removed from the server's config linger in the destination
+	// directory and would make the local glob match. Stats is always
+	// non-nil after a successful Run (verified in source v0.3.4: Run
+	// wraps the stats from maincmd.ClientRun into &Result{Stats}).
 	if result == nil || result.Stats == nil || result.Stats.Size == 0 {
 		return nil, fmt.Errorf("no backup files received: server glob matched nothing: %s", globPath)
 	}
@@ -231,12 +253,13 @@ func transfer(ctx context.Context, rsyncClient *rsyncclient.Client, destDir, glo
 // verifyBackup sanity-checks the received files: at least one latest-*
 // file must be present in the destination directory, none may be empty,
 // and every file must pass the SQLite integrity check. The zero-match
-// failure itself is detected by transfer from the transfer stats (total
-// size zero means the sender's file list was empty); this glob check is
-// the sanity check that the files actually landed in the destination
-// directory. Verification is deliberately non-cancellable: it is a
-// local read-only scan of files already on disk, and process-level
-// interruption (SIGINT) applies.
+// failure itself is detected earlier (the Go glob in backupLocal, or
+// the SSH sender failing on the literal pattern, with the transfer
+// stats size check as final guard); this glob check is the sanity
+// check that the files actually landed in the destination directory.
+// Verification is deliberately non-cancellable: it is a local read-only
+// scan of files already on disk, and process-level interruption
+// (SIGINT) applies.
 func verifyBackup(destDir string) error {
 	localLatestGlob := filepath.Join(destDir, ripbackup.LatestGlob)
 	latestFiles, err := filepath.Glob(localLatestGlob)
@@ -276,6 +299,17 @@ func verifyBackup(destDir string) error {
 }
 
 func verifySqliteIntegrity(dbPath string) (err error) {
+	// Opening a WAL-mode database read-only initializes the WAL
+	// infrastructure and leaves two artifacts next to the database in
+	// the destination directory: the -shm wal-index (32768 bytes) and
+	// the -wal file. Both are always inert here: the connection is
+	// read-only and integrity_check never writes, so the -wal stays at
+	// 0 bytes and the wal-index describes an empty WAL. On later runs
+	// the same artifact names are reused — the stale index is validated
+	// against the empty -wal on open and discarded, and every page is
+	// read from the .db file alone, so the verification result is never
+	// affected. The artifacts hold no backup data and are ignored by
+	// the latest-*.db glob.
 	conn, err := sqlite.OpenConn(dbPath, sqlite.OpenReadOnly)
 	if err != nil {
 		return fmt.Errorf("failed to open database for verification: %w", err)
