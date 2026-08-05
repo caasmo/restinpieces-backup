@@ -1,5 +1,7 @@
 # restinpieces-backup-client
 
+[![golangci-lint](https://github.com/caasmo/restinpieces-backup-client/actions/workflows/golangci-lint.yml/badge.svg)](https://github.com/caasmo/restinpieces-backup-client/actions/workflows/golangci-lint.yml)
+
 Client side of the simple default [restinpieces](https://github.com/caasmo/restinpieces) backup system. If you want point-in-time recovery, use the litestream package — see [restinpieces-litestream](https://github.com/caasmo/restinpieces-litestream).
 
 The backup system follows a two-step push-pull design: the **server side** — creating server local snapshots via a background job — is built into restinpieces itself (see [doc/backup.md](https://github.com/caasmo/restinpieces/blob/master/doc/backup.md)). This repository provides the **client side**: one-shot binaries that run in a client machine and pull the backups and verify their integrity.
