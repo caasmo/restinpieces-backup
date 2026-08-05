@@ -4,6 +4,7 @@ package main
 import (
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -46,7 +47,9 @@ func main() {
 		slog.Error("Failed to set up SFTP client", "error", err)
 		os.Exit(1)
 	}
-	defer sftpClient.Close()
+	defer func() {
+		_ = sftpClient.Close()
+	}()
 
 	latestBackupFilename, err := findLatestBackup(sftpClient, cfg.RemoteBackupDir)
 	if err != nil {
@@ -122,25 +125,32 @@ func findLatestBackup(client *sftp.Client, remoteDir string) (string, error) {
 	return files[0].Name(), nil
 }
 
-func downloadBackup(client *sftp.Client, remoteDir, filename, localDir string) (string, error) {
-	if err := os.MkdirAll(localDir, 0755); err != nil {
+func downloadBackup(client *sftp.Client, remoteDir, filename, localDir string) (localPath string, err error) {
+	err = os.MkdirAll(localDir, 0755)
+	if err != nil {
 		return "", fmt.Errorf("could not create local backup directory: %w", err)
 	}
 
 	remotePath := filepath.Join(remoteDir, filename)
-	localPath := filepath.Join(localDir, filename)
+	localPath = filepath.Join(localDir, filename)
 
 	srcFile, err := client.Open(remotePath)
 	if err != nil {
 		return "", fmt.Errorf("could not open remote backup file: %w", err)
 	}
-	defer srcFile.Close()
+	defer func() {
+		closeErr := srcFile.Close()
+		err = errors.Join(err, closeErr)
+	}()
 
 	dstFile, err := os.Create(localPath)
 	if err != nil {
 		return "", fmt.Errorf("could not create local backup file: %w", err)
 	}
-	defer dstFile.Close()
+	defer func() {
+		closeErr := dstFile.Close()
+		err = errors.Join(err, closeErr)
+	}()
 
 	_, err = io.Copy(dstFile, srcFile)
 	if err != nil {
@@ -150,12 +160,16 @@ func downloadBackup(client *sftp.Client, remoteDir, filename, localDir string) (
 	return localPath, nil
 }
 
-func verifyBackup(ctx context.Context, gzippedBackupPath string) error {
+func verifyBackup(ctx context.Context, gzippedBackupPath string) (err error) {
 	tempDBPath := filepath.Join(os.TempDir(), fmt.Sprintf("verified-%d.db", time.Now().UnixNano()))
-	if err := decompressFile(gzippedBackupPath, tempDBPath); err != nil {
+	err = decompressFile(gzippedBackupPath, tempDBPath)
+	if err != nil {
 		return fmt.Errorf("failed to decompress for verification: %w", err)
 	}
-	defer os.Remove(tempDBPath)
+	defer func() {
+		removeErr := os.Remove(tempDBPath)
+		err = errors.Join(err, removeErr)
+	}()
 
 	slog.Info("Decompressed backup for verification", "path", tempDBPath)
 
@@ -163,13 +177,19 @@ func verifyBackup(ctx context.Context, gzippedBackupPath string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open decompressed database: %w", err)
 	}
-	defer conn.Close()
+	defer func() {
+		closeErr := conn.Close()
+		err = errors.Join(err, closeErr)
+	}()
 
 	stmt, err := conn.Prepare("PRAGMA integrity_check;")
 	if err != nil {
 		return fmt.Errorf("failed to prepare integrity_check statement: %w", err)
 	}
-	defer stmt.Finalize()
+	defer func() {
+		finalizeErr := stmt.Finalize()
+		err = errors.Join(err, finalizeErr)
+	}()
 
 	row, err := stmt.Step()
 	if err != nil {
@@ -187,26 +207,36 @@ func verifyBackup(ctx context.Context, gzippedBackupPath string) error {
 	return nil
 }
 
-func decompressFile(sourcePath, destPath string) error {
+func decompressFile(sourcePath, destPath string) (err error) {
 	sourceFile, err := os.Open(sourcePath)
 	if err != nil {
 		return fmt.Errorf("failed to open source file for decompression: %w", err)
 	}
-	defer sourceFile.Close()
+	defer func() {
+		closeErr := sourceFile.Close()
+		err = errors.Join(err, closeErr)
+	}()
 
 	gzipReader, err := gzip.NewReader(sourceFile)
 	if err != nil {
 		return fmt.Errorf("failed to create gzip reader: %w", err)
 	}
-	defer gzipReader.Close()
+	defer func() {
+		closeErr := gzipReader.Close()
+		err = errors.Join(err, closeErr)
+	}()
 
 	destFile, err := os.Create(destPath)
 	if err != nil {
 		return fmt.Errorf("failed to create destination file for decompression: %w", err)
 	}
-	defer destFile.Close()
+	defer func() {
+		closeErr := destFile.Close()
+		err = errors.Join(err, closeErr)
+	}()
 
-	if _, err := io.Copy(destFile, gzipReader); err != nil {
+	_, err = io.Copy(destFile, gzipReader)
+	if err != nil {
 		return fmt.Errorf("failed to copy and decompress data: %w", err)
 	}
 
