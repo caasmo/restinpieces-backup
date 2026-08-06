@@ -2,6 +2,8 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/caasmo/restinpieces-backup-client)](https://pkg.go.dev/github.com/caasmo/restinpieces-backup-client)
 [![golangci-lint](https://github.com/caasmo/restinpieces-backup-client/actions/workflows/golangci-lint.yml/badge.svg)](https://github.com/caasmo/restinpieces-backup-client/actions/workflows/golangci-lint.yml)
+[![sloc](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/caasmo/restinpieces-backup-client/master/.github/badges/sloc.json)](https://github.com/caasmo/restinpieces-backup-client/actions/workflows/sloc.yml)
+[![deps](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/caasmo/restinpieces-backup-client/master/.github/badges/deps.json)](https://github.com/caasmo/restinpieces-backup-client/actions/workflows/dependencies.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/caasmo/restinpieces-backup-client?style=flat)]()
 [![Built Go](https://img.shields.io/badge/built_with-Go-00ADD8.svg?style=flat)]()
 
