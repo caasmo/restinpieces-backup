@@ -12,9 +12,14 @@ jobs:
       contents: write
     steps:
       - name: Checkout code
+        # During a release event, GitHub Actions check out the release tag,
+        # which leads to a "detached HEAD" state. To commit and push changes back
+        # to the repository (e.g., updating the deps badge), we must explicitly
+        # check out the persistent target branch.
         uses: actions/checkout@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          ref: master
 
       - name: Set up Go
         uses: actions/setup-go@v7
