@@ -1,6 +1,12 @@
 # restinpieces-backup-client
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/caasmo/restinpieces-backup-client)](https://pkg.go.dev/github.com/caasmo/restinpieces-backup-client)
+
 [![golangci-lint](https://github.com/caasmo/restinpieces-backup-client/actions/workflows/golangci-lint.yml/badge.svg)](https://github.com/caasmo/restinpieces-backup-client/actions/workflows/golangci-lint.yml)
+
+[![GitHub Release](https://img.shields.io/github/v/release/caasmo/restinpieces-backup-client?style=flat)]()
+
+[![Built Go](https://img.shields.io/badge/built_with-Go-00ADD8.svg?style=flat)]()
 
 Client side of the simple default [restinpieces](https://github.com/caasmo/restinpieces) backup system. If you want point-in-time recovery, use the litestream package — see [restinpieces-litestream](https://github.com/caasmo/restinpieces-litestream).
 
