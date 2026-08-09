@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/caasmo/restinpieces-backup-client/config"
@@ -93,6 +94,24 @@ type Session struct {
 	session *cryptossh.Session
 	stdin   io.WriteCloser
 	stdout  io.Reader
+}
+
+// Quote wraps s in single quotes for a POSIX login shell, escaping any
+// embedded single quotes, so the remote shell treats the value as a
+// literal word instead of interpreting its metacharacters.
+//
+// This is the primitive used to make a user-controlled path inert when
+// it is interpolated into a remote shell command. Anything inside the
+// returned quotes is taken literally: no glob expansion, no parameter
+// expansion, no command substitution, no word splitting.
+//
+// Example:
+//
+//	Quote("/var/backups")   // "'/var/backups'"
+//	Quote("a b; rm -rf /")  // "'a b; rm -rf /'"
+//	Quote("/path/it's")     // "'/path/it'\''s'"
+func Quote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // NewSession opens a new session on client, wires its stdin, stdout

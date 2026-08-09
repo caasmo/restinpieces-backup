@@ -52,7 +52,7 @@ The machine that runs the rsync server side (the remote host in SSH mode, the lo
 
 | Variable | Required | Description |
 | --- | --- | --- |
-| `RIP_BCK_SOURCE_DIR` | yes | Backup directory on the server containing the `latest-*.db` hard links |
+| `RIP_BCK_SOURCE_DIR` | yes | Backup directory on the server containing the `latest-*.db` hard links. In SSH mode the directory is shell-quoted on the remote command; only the `latest-*.db` glob is expanded by the remote shell |
 | `RIP_BCK_DEST_DIR` | yes | Local directory the files are pulled into (created if missing) |
 | `RIP_BCK_SSH_USER` | yes* | SSH user |
 | `RIP_BCK_SSH_HOST` | yes* | SSH host |
