@@ -58,6 +58,7 @@ func main() {
 			slog.Error("Backup failed", "error", err)
 			os.Exit(1)
 		}
+		landlock.Verify()
 
 		client, err = rsync.NewSSHClient(creds, cfg.SourceDir, cfg.DestDir)
 	}

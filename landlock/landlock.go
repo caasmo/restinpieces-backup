@@ -6,6 +6,8 @@ package landlock
 
 import (
 	"fmt"
+	"log/slog"
+	"os"
 
 	ll "github.com/landlock-lsm/go-landlock/landlock"
 )
@@ -30,6 +32,8 @@ import (
 // is deactivated anyway (rsync.DontRestrict), so this Restrict is the
 // only landlock applied.
 func Restrict(destDir string) error {
+	slog.Info("setting up landlock ACL", "paths_ro", []string{"/etc"}, "paths_rw", []string{destDir})
+
 	err := ll.V3.BestEffort().RestrictPaths(
 		ll.RODirs("/etc").IgnoreIfMissing(),
 		ll.RWDirs(destDir).WithRefer(),
@@ -38,4 +42,21 @@ func Restrict(destDir string) error {
 		return fmt.Errorf("failed to apply landlock: %w", err)
 	}
 	return nil
+}
+
+// Verify proves the cage is live by attempting to read a path that is
+// never on the allowlist (/sys) and logging the expected denial — the
+// same check gokrazy's internal/restrict performs after applying.
+// Call after Restrict.
+func Verify() {
+	// We use /sys because that path should never be required for
+	// regular functioning, yet is standard enough to be present on all
+	// supported Linux versions (including gokrazy).
+	const verifyPath = "/sys"
+	_, err := os.ReadDir(verifyPath)
+	if err == nil {
+		slog.Info("landlock seems ineffective: readdir(/sys) unexpectedly worked!")
+	} else {
+		slog.Info("landlock verified: readdir(/sys) denied", "error", err)
+	}
 }
