@@ -13,6 +13,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/caasmo/restinpieces-backup-client/config"
 	"github.com/caasmo/restinpieces-backup-client/ssh"
 	"github.com/pkg/sftp"
 	cryptossh "golang.org/x/crypto/ssh"
@@ -80,13 +81,18 @@ func main() {
 }
 
 func setupSftpClient(cfg Config) (*sftp.Client, *cryptossh.Client, error) {
-	conn, err := ssh.Dial(ssh.Config{
+	creds, err := ssh.LoadCredentials(config.SSHConfig{
 		User:           cfg.SSHUser,
 		Host:           cfg.SSHHost,
 		Port:           cfg.SSHPort,
 		PrivateKeyPath: cfg.SSHPrivateKeyPath,
 		HostKeyPath:    cfg.SSHHostKeyPath,
 	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load SSH credentials: %w", err)
+	}
+
+	conn, err := ssh.Dial(creds)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to dial ssh: %w", err)
 	}

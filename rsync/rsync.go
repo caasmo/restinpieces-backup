@@ -119,26 +119,26 @@ func (r *receiver) transfer(ctx context.Context, rw io.ReadWriter, wait func() e
 // SSHClient pulls the latest-*.db files from a remote server over SSH.
 type SSHClient struct {
 	*receiver
-	sshCfg ssh.Config
+	creds ssh.Credentials
 }
 
 // Compile-time check: SSHClient satisfies Client.
 var _ Client = (*SSHClient)(nil)
 
 // NewSSHClient creates the rsync receiver for the source glob and
-// stores it with the job config.
-func NewSSHClient(sshCfg ssh.Config, sourceDir, destDir string) (*SSHClient, error) {
+// stores it with the in-memory SSH credentials.
+func NewSSHClient(creds ssh.Credentials, sourceDir, destDir string) (*SSHClient, error) {
 	r, err := newReceiver(sourceDir, destDir)
 	if err != nil {
 		return nil, err
 	}
-	return &SSHClient{receiver: r, sshCfg: sshCfg}, nil
+	return &SSHClient{receiver: r, creds: creds}, nil
 }
 
 // Run dials the SSH server, starts the remote rsync binary in server
 // mode over a session, and delegates to transfer.
 func (c *SSHClient) Run(ctx context.Context) (err error) {
-	client, err := ssh.Dial(c.sshCfg)
+	client, err := ssh.Dial(c.creds)
 	if err != nil {
 		return fmt.Errorf("failed to dial ssh: %w", err)
 	}

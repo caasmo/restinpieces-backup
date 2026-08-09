@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/caasmo/restinpieces-backup-client/config"
 	"github.com/caasmo/restinpieces-backup-client/rsync"
 	"github.com/caasmo/restinpieces-backup-client/ssh"
 	"github.com/caasmo/restinpieces-backup-client/verification"
@@ -17,19 +18,13 @@ func main() {
 	flag.BoolVar(useLocal, "local", false, "run rsync on the same machine instead of over SSH")
 	flag.Parse()
 
-	sourceDir := os.Getenv("RIP_BCK_SOURCE_DIR")
-	destDir := os.Getenv("RIP_BCK_DEST_DIR")
-
-	if sourceDir == "" {
-		slog.Error("Backup failed", "error", fmt.Errorf("RIP_BCK_SOURCE_DIR is required"))
-		os.Exit(1)
-	}
-	if destDir == "" {
-		slog.Error("Backup failed", "error", fmt.Errorf("RIP_BCK_DEST_DIR is required"))
+	cfg, err := config.New()
+	if err != nil {
+		slog.Error("Backup failed", "error", err)
 		os.Exit(1)
 	}
 
-	err := os.MkdirAll(destDir, 0755)
+	err = os.MkdirAll(cfg.DestDir, 0755)
 	if err != nil {
 		slog.Error("Backup failed", "error", fmt.Errorf("failed to create destination directory: %w", err))
 		os.Exit(1)
@@ -41,26 +36,33 @@ func main() {
 	// machine; the default connects over SSH.
 	var client rsync.Client
 	if *useLocal {
-		client, err = rsync.NewLocalClient(sourceDir, destDir)
+		client, err = rsync.NewLocalClient(cfg.SourceDir, cfg.DestDir)
 	} else {
-		sshCfg, cfgErr := ssh.ConfigFromEnv()
+		cfgErr := cfg.ValidateSSH()
 		if cfgErr != nil {
 			slog.Error("Backup failed", "error", fmt.Errorf("failed to read SSH config: %w", cfgErr))
 			os.Exit(1)
 		}
-		client, err = rsync.NewSSHClient(sshCfg, sourceDir, destDir)
+		creds, loadErr := ssh.LoadCredentials(cfg.SSH)
+		if loadErr != nil {
+			slog.Error("Backup failed", "error", fmt.Errorf("failed to load SSH credentials: %w", loadErr))
+			os.Exit(1)
+		}
+		client, err = rsync.NewSSHClient(creds, cfg.SourceDir, cfg.DestDir)
 	}
 	if err != nil {
 		slog.Error("Backup failed", "error", err)
 		os.Exit(1)
 	}
 
-	if err := client.Run(context.Background()); err != nil {
+	err = client.Run(context.Background())
+	if err != nil {
 		slog.Error("Backup failed", "error", err)
 		os.Exit(1)
 	}
 
-	if err := verification.VerifyBackup(destDir); err != nil {
+	err = verification.VerifyBackup(cfg.DestDir)
+	if err != nil {
 		slog.Error("Backup failed", "error", fmt.Errorf("backup verification failed: %w", err))
 		os.Exit(1)
 	}

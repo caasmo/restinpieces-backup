@@ -1,6 +1,6 @@
 // Package ssh provides the SSH connection helpers shared by the backup
-// client commands: environment configuration, the host-key-pinned
-// dial, and remote command sessions.
+// client commands: loading the in-memory credentials, the
+// host-key-pinned dial, and remote command sessions.
 package ssh
 
 import (
@@ -10,81 +10,75 @@ import (
 	"os"
 	"time"
 
+	"github.com/caasmo/restinpieces-backup-client/config"
 	cryptossh "golang.org/x/crypto/ssh"
 )
 
-// Config holds the parameters needed to establish an SSH connection.
-type Config struct {
-	User           string
-	Host           string
-	Port           string
-	PrivateKeyPath string
-	HostKeyPath    string
+// Credentials holds the SSH identity in memory: the connection
+// parameters and the parsed keys. LoadCredentials builds it once at
+// startup; every dial reuses the parsed keys instead of re-reading the
+// key files.
+type Credentials struct {
+	// User is the SSH login name.
+	User string
+	// Host is the server's hostname or IP address.
+	Host string
+	// Port is the server's SSH port.
+	Port string
+	// signer is the parsed private key used for client authentication.
+	signer cryptossh.Signer
+	// hostKey is the server's public host key, pinned: a dial against
+	// any other host key fails.
+	hostKey cryptossh.PublicKey
 }
 
-// ConfigFromEnv reads SSH configuration from environment variables.
-// RIP_BCK_SSH_PORT defaults to "22"; all other variables are required.
-func ConfigFromEnv() (Config, error) {
-	cfg := Config{
-		User:           os.Getenv("RIP_BCK_SSH_USER"),
-		Host:           os.Getenv("RIP_BCK_SSH_HOST"),
-		Port:           os.Getenv("RIP_BCK_SSH_PORT"),
-		PrivateKeyPath: os.Getenv("RIP_BCK_SSH_PRIVATE_KEY_PATH"),
-		HostKeyPath:    os.Getenv("RIP_BCK_SSH_HOST_KEY_PATH"),
-	}
-	if cfg.Port == "" {
-		cfg.Port = "22"
-	}
-
-	switch {
-	case cfg.User == "":
-		return cfg, fmt.Errorf("RIP_BCK_SSH_USER is required")
-	case cfg.Host == "":
-		return cfg, fmt.Errorf("RIP_BCK_SSH_HOST is required")
-	case cfg.PrivateKeyPath == "":
-		return cfg, fmt.Errorf("RIP_BCK_SSH_PRIVATE_KEY_PATH is required")
-	case cfg.HostKeyPath == "":
-		return cfg, fmt.Errorf("RIP_BCK_SSH_HOST_KEY_PATH is required")
-	}
-
-	return cfg, nil
-}
-
-// Dial authenticates with the configured private key and returns an
-// SSH client. The host key is pinned: HostKeyPath must point to the
-// server's public host key (provisioned out-of-band), and a dial
-// against any other host key fails.
-func Dial(cfg Config) (*cryptossh.Client, error) {
+// LoadCredentials reads the private and host key files once, parses
+// them, and returns the in-memory credentials used by Dial.
+func LoadCredentials(cfg config.SSHConfig) (Credentials, error) {
 	key, err := os.ReadFile(cfg.PrivateKeyPath)
 	if err != nil {
-		return nil, fmt.Errorf("unable to read private key: %w", err)
+		return Credentials{}, fmt.Errorf("unable to read private key: %w", err)
 	}
 
 	signer, err := cryptossh.ParsePrivateKey(key)
 	if err != nil {
-		return nil, fmt.Errorf("unable to parse private key: %w", err)
+		return Credentials{}, fmt.Errorf("unable to parse private key: %w", err)
 	}
 
 	hostKey, err := os.ReadFile(cfg.HostKeyPath)
 	if err != nil {
-		return nil, fmt.Errorf("unable to read host key: %w", err)
+		return Credentials{}, fmt.Errorf("unable to read host key: %w", err)
 	}
 
 	pubKey, _, _, _, err := cryptossh.ParseAuthorizedKey(hostKey)
 	if err != nil {
-		return nil, fmt.Errorf("unable to parse host key: %w", err)
+		return Credentials{}, fmt.Errorf("unable to parse host key: %w", err)
 	}
 
+	return Credentials{
+		User:    cfg.User,
+		Host:    cfg.Host,
+		Port:    cfg.Port,
+		signer:  signer,
+		hostKey: pubKey,
+	}, nil
+}
+
+// Dial authenticates with the in-memory credentials and returns an SSH
+// client. The host key is pinned: LoadCredentials validated the host
+// key file (provisioned out-of-band), and a dial against any other host
+// key fails.
+func Dial(creds Credentials) (*cryptossh.Client, error) {
 	sshConfig := &cryptossh.ClientConfig{
-		User: cfg.User,
+		User: creds.User,
 		Auth: []cryptossh.AuthMethod{
-			cryptossh.PublicKeys(signer),
+			cryptossh.PublicKeys(creds.signer),
 		},
-		HostKeyCallback: cryptossh.FixedHostKey(pubKey),
+		HostKeyCallback: cryptossh.FixedHostKey(creds.hostKey),
 		Timeout:         15 * time.Second,
 	}
 
-	addr := fmt.Sprintf("%s:%s", cfg.Host, cfg.Port)
+	addr := fmt.Sprintf("%s:%s", creds.Host, creds.Port)
 	client, err := cryptossh.Dial("tcp", addr, sshConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial ssh: %w", err)
