@@ -3,6 +3,7 @@ module github.com/caasmo/restinpieces-backup-client
 go 1.25.0
 
 require (
+	github.com/caasmo/go-daemon-runner v0.1.0
 	github.com/caasmo/restinpieces v0.15.0
 	github.com/gokrazy/rsync v0.3.4
 	github.com/pkg/sftp v1.13.9
@@ -25,7 +26,7 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/stretchr/testify v1.10.0 // indirect
 	golang.org/x/exp v0.0.0-20250408133849-7e4ce0ab07d0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 	kernel.org/pub/linux/libs/security/libcap/psx v1.2.70 // indirect
 	modernc.org/libc v1.65.7 // indirect

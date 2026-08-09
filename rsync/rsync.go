@@ -28,11 +28,21 @@ type Client interface {
 	// The concrete implementations use the named return (err error)
 	// so their deferred cleanup joins behave as in the original.
 	// Transfer statistics are log-only: Run does not return them.
+	// Run may be called multiple times on the same client: gokrazy
+	// documents "You can call [Client.Run] one or more times with the
+	// same [Client]" (rsyncclient.New, v0.3.4). Calls must be
+	// sequential — the daemon's synchronous tick body runs at most one
+	// transfer at a time.
 	Run(ctx context.Context) error
 }
 
 // receiver holds the rsync receiver client and the transfer state
 // shared by both client types.
+//
+// rsyncClient is created once and reused across every transfer. The
+// gokrazy rsyncclient.New doc comment guarantees this reuse (v0.3.4):
+// "You can call [Client.Run] one or more times with the same
+// [Client]."
 type receiver struct {
 	rsyncClient *rsyncclient.Client
 	globPath    string
