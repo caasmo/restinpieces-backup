@@ -67,7 +67,7 @@ The machine that runs the rsync server side (the remote host in SSH mode, the lo
 `-l` runs the whole pipeline without SSH: the client starts the local `rsync` binary in server mode on the same machine and pulls from a local `RIP_BCK_SOURCE_DIR`. This is how to test the full transfer pipeline — protocol, delta transfer, atomic rename, integrity check — on the server machine itself (where the backup directory with the `latest-*.db` hard links already lives) or on any machine that has a copy of the source directory and an `rsync` binary in PATH:
 
 ```bash
-RIP_BCK_SOURCE_DIR=/var/caasmo/backups RIP_BCK_DEST_DIR=./backups ./backup-client -l
+RIP_BCK_SOURCE_DIR=/var/backups RIP_BCK_DEST_DIR=./backups ./backup-client -l
 ```
 
 In local mode the source glob is expanded by the client itself (there is no shell in between), so zero matches fail before the transfer starts with `no backup files received: server glob matched nothing`.
@@ -104,7 +104,7 @@ The machine that runs the rsync server side (the remote host in SSH mode, the lo
 `-l` runs the whole pipeline without SSH: the client starts the local `rsync` binary in server mode on the same machine and pulls from a local `RIP_BCK_SOURCE_DIR`. This is how to test the full transfer pipeline — protocol, delta transfer, atomic rename, integrity check — on the server machine itself (where the backup directory with the `latest-*.db` hard links already lives) or on any machine that has a copy of the source directory and an `rsync` binary in PATH:
 
 ```bash
-RIP_BCK_SOURCE_DIR=/var/caasmo/backups RIP_BCK_DEST_DIR=./backups RIP_BCK_INTERVAL=5m ./backup-daemon -l
+RIP_BCK_SOURCE_DIR=/var/backups RIP_BCK_DEST_DIR=./backups RIP_BCK_INTERVAL=5m ./backup-daemon -l
 ```
 
 The first backup runs immediately at startup, then one per interval; Ctrl-C stops the daemon gracefully. In local mode the source glob is expanded by the client itself (there is no shell in between), so zero matches fail before the transfer starts with `no backup files received: server glob matched nothing`.
@@ -146,7 +146,7 @@ Both clients are one-shot runs: exit code `0` means the transfer and the integri
 rsync client example:
 
 ```cron
-*/5 * * * * RIP_BCK_SOURCE_DIR=/var/caasmo/backups RIP_BCK_DEST_DIR=/home/user/backups RIP_BCK_SSH_USER=backup RIP_BCK_SSH_HOST=server.example.com RIP_BCK_SSH_PORT=22 RIP_BCK_SSH_PRIVATE_KEY_PATH=/home/user/.ssh/id_ed25519 RIP_BCK_SSH_HOST_KEY_PATH=/etc/caasmo/ssh_host_ed25519_key.pub /usr/local/bin/backup-client 2>>/var/log/backup-client.log
+*/5 * * * * RIP_BCK_SOURCE_DIR=/var/backups RIP_BCK_DEST_DIR=/home/user/backups RIP_BCK_SSH_USER=backup RIP_BCK_SSH_HOST=server.example.com RIP_BCK_SSH_PORT=22 RIP_BCK_SSH_PRIVATE_KEY_PATH=/home/user/.ssh/id_ed25519 RIP_BCK_SSH_HOST_KEY_PATH=/etc/ssh_host_ed25519_key.pub /usr/local/bin/backup-client 2>>/var/log/backup-client.log
 ```
 
 ### Systemd timer
@@ -154,14 +154,14 @@ rsync client example:
 Environment in a separate file:
 
 ```ini
-# /etc/caasmo/backup-client.env
-RIP_BCK_SOURCE_DIR=/var/caasmo/backups
+# /etc/backup-client.env
+RIP_BCK_SOURCE_DIR=/var/backups
 RIP_BCK_DEST_DIR=/home/user/backups
 RIP_BCK_SSH_USER=backup
 RIP_BCK_SSH_HOST=server.example.com
 RIP_BCK_SSH_PORT=22
 RIP_BCK_SSH_PRIVATE_KEY_PATH=/home/user/.ssh/id_ed25519
-RIP_BCK_SSH_HOST_KEY_PATH=/etc/caasmo/ssh_host_ed25519_key.pub
+RIP_BCK_SSH_HOST_KEY_PATH=/etc/ssh_host_ed25519_key.pub
 ```
 
 ```ini
@@ -173,7 +173,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-EnvironmentFile=/etc/caasmo/backup-client.env
+EnvironmentFile=/etc/backup-client.env
 ExecStart=/usr/local/bin/backup-client
 ```
 

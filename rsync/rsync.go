@@ -94,29 +94,20 @@ func (r *receiver) transfer(ctx context.Context, rw io.ReadWriter, wait func() e
 		return nil, fmt.Errorf("rsync transfer failed: %w", err)
 	}
 
-	// Zero-match glob is a failure, not a success: the sender must
-	// transfer at least one file. Both paths detect the empty file list
-	// before this check — the local path in LocalClient.Run (Go glob
-	// before spawning), the SSH path in the sender, which fails on the
-	// literal pattern the shell leaves in place — so this size check is
-	// the final guard. The sender's final stats report the total size of
-	// files (the sum of the file-list lengths), which is zero iff the
-	// file list was empty, even when stale files from a database
-	// removed from the server's config linger in the destination
-	// directory and would make the local glob match. Stats is always
-	// non-nil after a successful Run (verified in source v0.3.4: Run
-	// wraps the stats from maincmd.ClientRun into &Result{Stats}).
-	if result == nil || result.Stats == nil || result.Stats.Size == 0 {
-		return nil, fmt.Errorf("no backup files received: server glob matched nothing: %s", r.globPath)
-	}
-
-	// Wait closes stdin and blocks until the server process exits. A
-	// nonzero exit after a successful protocol run is a server-side
-	// failure (e.g. the sender could not read a matched file), so the
-	// run fails instead of silently accepting the transfer.
+	// Wait closes stdin and blocks until the server process exits. It
+	// must run before the zero-match check below: a nonzero exit is the
+	// only signal of a remote-side failure (e.g. a stale or renamed
+	// source directory), and skipping it would force-close the SSH
+	// session without collecting the remote exit code.
 	waitErr := wait()
 	if waitErr != nil {
 		return nil, fmt.Errorf("rsync server process exited with error: %w", waitErr)
+	}
+
+	// A zero-size result means the sender transferred no files: fail
+	// instead of silently accepting an empty backup.
+	if result == nil || result.Stats == nil || result.Stats.Size == 0 {
+		return nil, fmt.Errorf("no backup files received: server glob matched nothing: %s", r.globPath)
 	}
 
 	return result, nil

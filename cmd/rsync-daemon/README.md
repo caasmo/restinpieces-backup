@@ -68,7 +68,7 @@ In short, gokrazy's landlock is unfit for a daemon: the client is reusable, but 
 
 ## Systemd service
 
-The repository ships an optional systemd unit (`cmd/rsync-daemon/rsync-daemon.service`) that applies filesystem confinement equivalent to landlock's, along with additional hardening, at process start — before the daemon runs.
+An optional systemd unit applies filesystem confinement equivalent to landlock's, along with additional hardening, at process start — before the daemon runs.
 
 ## Security choices of this package
 

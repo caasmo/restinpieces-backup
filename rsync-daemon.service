@@ -1,0 +1,92 @@
+[Unit]
+Description=restinpieces backup daemon (rsync pull)
+Documentation=https://github.com/caasmo/restinpieces-backup-client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Run as an unprivileged, dedicated system user. Create it with:
+#   useradd --system --create-home --home-dir /var/lib/backup-daemon \
+#           --shell /usr/sbin/nologin backup-daemon
+User=backup-daemon
+Group=backup-daemon
+
+# The daemon's only writable directory is the backup destination
+# (ReadWritePaths below); working directory is just the process CWD.
+WorkingDirectory=/var/lib/backup-daemon
+
+# Environment: copy to /etc/backup-daemon.env and fill in the
+# RIP_BCK_* variables (see the repository README). RIP_BCK_DEST_DIR must
+# match the ReadWritePaths entry below.
+# The leading '-' makes the unit start even if the file is missing; the
+# daemon then fails fast with a clear error message.
+EnvironmentFile=-/etc/backup-daemon.env
+
+ExecStart=/usr/local/bin/backup-daemon
+
+# === FILESYSTEM HARDENING ===
+# The landlock substitute. Landlock is deactivated in the daemon (gokrazy
+# re-applies it per transfer and the rulesets stack, exhausting the kernel's
+# 16-layer cap; see cmd/rsync-daemon/README.md, "Gokrazy's use of landlock").
+# systemd applies the equivalent confinement once, at process start, before
+# the daemon runs.
+
+# NoNewPrivileges: the process and its children can never gain more
+# privileges than at startup — no SUID/SGID escalation via the local rsync
+# subprocess.
+NoNewPrivileges=true
+
+# ProtectSystem=strict: the whole filesystem is read-only except /dev,
+# /proc, /sys, /home, /root, /run/user — so /etc stays read-only for the
+# SSH host key and for DNS configuration (the Go resolver re-reads
+# /etc/resolv.conf etc. on every dial).
+ProtectSystem=strict
+
+# ProtectHome=read-only, not ProtectHome=true/tmpfs: the SSH private key
+# may live under /home and must stay readable at startup, while /home is
+# no longer writable.
+ProtectHome=read-only
+
+# The only writable path: the backup destination directory. It must match
+# RIP_BCK_DEST_DIR in the environment file. Local mode also reads the
+# source directory and executes the system rsync binary — both stay
+# read-only/executable under ProtectSystem=strict.
+ReadWritePaths=/home/backup/backups
+
+# Private /tmp for the daemon and its rsync subprocess; hides the host
+# /tmp from them and their temp files from other users.
+PrivateTmp=true
+
+# === KERNEL PROTECTION ===
+# Prevent loading kernel modules, changing kernel tunables, reading kernel
+# logs, or modifying cgroup settings.
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+
+# === PROCESS VISIBILITY ===
+# The daemon sees only its own processes in /proc (its rsync subprocess
+# included), not other users' processes.
+ProtectProc=invisible
+
+# === NAMESPACE RESTRICTIONS ===
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+
+# === NETWORK ===
+# SSH is a TCP dial and the Go resolver queries DNS over UDP/TCP; no
+# AF_UNIX sockets are needed.
+RestrictAddressFamilies=AF_INET AF_INET6
+
+# === RESTART ===
+Restart=on-failure
+RestartSec=5s
+
+Type=simple
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
