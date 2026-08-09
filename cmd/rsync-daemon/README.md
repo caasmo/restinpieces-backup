@@ -12,7 +12,7 @@ This document records the daemon's transfer engine and, in particular, its secur
   - [Landlock](#landlock)
   - [Gokrazy's use of landlock](#gokrazys-use-of-landlock)
 - [Systemd service](#systemd-service)
-- [Security choices](#security-choices)
+- [Security choices of this package](#security-choices-of-this-package)
   - [SSH mode](#ssh-mode)
   - [Local mode](#local-mode)
 
@@ -44,15 +44,14 @@ The rsync wire protocol carries a **file list** sent by the peer: file names, pa
 
 The transfer runs through gokrazy's `rsyncclient`, a Go rsync implementation that runs **in-process**, inside the daemon process. The API is explicitly built for reuse: `New`'s doc comment says *"you can call `Client.Run` one or more times with the same `Client`"*. The daemon relies on that contract: `receiver` (in `rsync/rsync.go`) caches a single `*rsyncclient.Client` and runs every daemon tick through it.
 
-That reused client is what applies the sandbox: every `Run` calls `restrict.MaybeFileSystem`, a function from gokrazy's `internal/restrict` package (in the `github.com/gokrazy/rsync` module), which installs a landlock ruleset around the process. Because the client is reused, the ruleset is re-installed on every tick — and landlock rulesets stack: the kernel caps them at 16 per process (`LANDLOCK_MAX_NUM_LAYERS`), so the 17th transfer would fail with E2BIG. The one-shot `cmd/rsync` never hits this — one `Run`, one ruleset, then exit.
+That reused client is what applies the sandbox: every `Run` calls `restrict.MaybeFileSystem`, a function from gokrazy's `internal/restrict` package (in the `github.com/gokrazy/rsync` module), which installs a landlock ruleset around the process. Because the client is reused, the ruleset is re-installed on every tick — and landlock rulesets stack: the kernel caps them at 16 per process (`LANDLOCK_MAX_NUM_LAYERS`), so the 17th transfer would fail with E2BIG. The one-shot `cmd/rsync` never hits this either: it installs the cage once at startup, before its single `Run`.
 
 The allowlist gokrazy applies is:
 
 - the destination directory — read/write;
-- `/etc` — read-only (user/group lookup, DNS configuration);
-- `/tmp` — read-only, on gokrazy platform builds.
+- `/etc` — read-only (user/group lookup, DNS configuration).
 
-`/etc` is granted whole, not file-by-file: Go's resolver re-reads `resolv.conf`, `hosts`, `services`, and `nsswitch.conf` on every DNS lookup, and `resolv.conf` may be recreated by DHCP or Tailscale — the individual files alone would break resolution later. On gokrazy platforms `resolv.conf` is a symlink into `/tmp`, hence `/tmp`.
+`/etc` is granted whole, not file-by-file: Go's resolver re-reads `resolv.conf`, `hosts`, `services`, and `nsswitch.conf` on every DNS lookup, and `resolv.conf` may be recreated by DHCP or Tailscale — the individual files alone would break resolution later.
 
 When the sandbox is applied, the daemon's log shows the ACL and its verification:
 
@@ -67,23 +66,25 @@ This allowlist is **hardcoded in gokrazy's internals and cannot be changed by th
 
 In short, landlock in gokrazy is **not well suited for a daemon**: the API says the client is reusable, but it does not allow skipping the repeated landlock application. Recreating the `*rsyncclient.Client` each tick instead of reusing it does not help — the stacking happens at the OS/thread level, tied to the process's credentials, not to the Go `Client` value. A brand-new `Client` still calls `landlock_restrict_self` on the same process on every `Run`.
 
-**Conclusion: landlock must be deactivated in all cases.** Over SSH the stacking is unavoidable and would eventually break every transfer; locally the sandbox is unneeded in the first place.
+**Conclusion: gokrazy's per-transfer sandbox is replaced by a single startup application.** The stacking makes gokrazy's per-`Run` application unusable in a daemon, so `newReceiver` passes `DontRestrict()`. Instead the SSH-mode mains call `landlock.Restrict` exactly once — `/etc` read-only, destination read/write — after the SSH keys are in memory and before the first transfer. Local mode stays unsandboxed: the sender subprocess must read the source directory and exec the system `rsync` binary, which the cage would deny.
+
+The `landlock` package uses **our own go-landlock version**: `go.mod` pins `v0.9.0` directly, not gokrazy's older pin of the same library. Go's minimal version selection builds everything against our `v0.9.0` — safe because the API gokrazy uses there is unchanged and its cage is deactivated anyway. If gokrazy ever pins `>= v0.9.0`, MVS adopts that version too.
 
 ## Systemd service
 
-The package provides a systemd service unit that applies filesystem confinement equivalent to landlock's, along with additional hardening, at process start — before the daemon runs. Applied up front, the confinement cannot break a long-lived daemon the way gokrazy's mid-run landlock does. This is defense in depth: the systemd hardening layers on top of the daemon's own security choices.
+The repository ships an optional systemd unit (`cmd/rsync-daemon/rsync-daemon.service`) that applies filesystem confinement equivalent to landlock's, along with additional hardening, at process start — before the daemon runs. With SSH mode now applying landlock itself, the unit is defense in depth rather than a requirement.
 
-## Security choices
+## Security choices of this package
+
+Gokrazy's landlock is deactivated in both modes (`rsyncclient.DontRestrict()` in `newReceiver`, `rsync/rsync.go`): gokrazy re-installs the sandbox on every transfer, each install stacking a layer — the kernel caps layers at 16, and a daemon would exhaust them.
 
 ### SSH mode
 
-- **Landlock is kept.** The receiver stays sandboxed; the SSH transfer happens under the cage.
-- **In-memory SSH keys.** The cage blocks file reads outside the destination directory and `/etc`, so per-dial reads of the private and host key files would fail after the first transfer. Instead the keys are loaded once at startup and kept in memory, reused on every dial — the standard `ssh-agent` pattern. The key material is in process memory during any dial regardless, so caching adds no new exposure.
+- **Landlock applied once at startup** (`landlock.Restrict`): after the SSH keys are in memory, before the first transfer — one layer instead of one per tick (see "Gokrazy's use of landlock").
+- **The package keeps the SSH keys in memory.** Loaded once at startup, reused on every dial — the standard `ssh-agent` pattern, the same best practice other packages follow.
 
 ### Local mode
 
-- **Landlock is deactivated** (`rsyncclient.DontRestrict()`).
-- Reasoning:
-  1. The threat is moot. The threat model is a malicious peer sending crafted file lists over the network. Local mode has no network peer: the sender is the daemon's own `rsync` subprocess and the data is the daemon's own backups on the same machine.
-  2. The cage is incompatible with a long-lived daemon. The sandbox is installed mid-run and is irreversible, yet the daemon must re-read the source directory on every tick to discover new `latest-*.db` files. A process that must keep reading the source cannot live inside a cage that permanently denies it.
-- The one-shot `cmd/rsync` keeps the sandbox: it runs a single transfer and exits, so the cage never has a second access to deny.
+- The one-shot `cmd/rsync` applies the same once-at-startup landlock in SSH mode; local mode is unsandboxed for both commands.
+
+The systemd unit is optional: [rsync-daemon.service](rsync-daemon.service) applies equivalent confinement plus hardening at process start — defense in depth.

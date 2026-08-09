@@ -123,7 +123,7 @@ SIGINT, SIGQUIT, and SIGTERM trigger a graceful shutdown: the runner cancels the
 
 ### Security
 
-The daemon's security architecture is documented in [cmd/rsync-daemon/README.md](cmd/rsync-daemon/README.md): the gokrazy landlock sandbox and the threat it addresses, the daemon's security choices (in-memory SSH keys in SSH mode, landlock deactivated in local mode), and the systemd hardening that replaces landlock at process start.
+The daemon's security architecture is documented in [cmd/rsync-daemon/README.md](cmd/rsync-daemon/README.md): the gokrazy landlock sandbox and the threat it addresses, the daemon's security choices (in-memory SSH keys, landlock applied once at startup in SSH mode, deactivated in local mode), and the optional systemd hardening.
 
 ## sftp command (`cmd/sftp`)
 

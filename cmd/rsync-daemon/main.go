@@ -8,6 +8,7 @@ import (
 
 	"github.com/caasmo/go-daemon-runner/run"
 	"github.com/caasmo/restinpieces-backup-client/config"
+	"github.com/caasmo/restinpieces-backup-client/landlock"
 	"github.com/caasmo/restinpieces-backup-client/rsync"
 	"github.com/caasmo/restinpieces-backup-client/ssh"
 )
@@ -67,6 +68,16 @@ func main() {
 			slog.Error("Backup failed", "error", fmt.Errorf("failed to load SSH credentials: %w", loadErr))
 			os.Exit(1)
 		}
+
+		// Confine the process for the rest of its life now that the SSH
+		// keys are in memory (the allowlist and the rationale live in
+		// the landlock package).
+		err = landlock.Restrict(cfg.DestDir)
+		if err != nil {
+			slog.Error("Backup failed", "error", err)
+			os.Exit(1)
+		}
+
 		client, err = rsync.NewSSHClient(creds, cfg.SourceDir, cfg.DestDir)
 		if err != nil {
 			slog.Error("Backup failed", "error", err)

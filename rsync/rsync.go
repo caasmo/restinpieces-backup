@@ -58,10 +58,11 @@ func newReceiver(sourceDir, destDir string) (*receiver, error) {
 	// If the transfer or checksum fails, the destination file is never
 	// touched.
 	//
-	// Landlock is deactivated in all cases (DontRestrict): gokrazy
-	// re-applies a landlock ruleset on every Run and the rulesets stack,
-	// capped at 16 per process — a long-lived daemon would exhaust them
-	// (README "Gokrazy's use of landlock").
+	// Landlock is deactivated here (DontRestrict): gokrazy re-applies a
+	// landlock ruleset on every Run and the rulesets stack, capped at 16
+	// per process — a long-lived daemon would exhaust them. The SSH-mode
+	// mains apply the equivalent landlock once at startup instead
+	// (landlock.Restrict, README "Gokrazy's use of landlock").
 	rsyncClient, err := rsyncclient.New([]string{"-av"}, rsyncclient.DontRestrict())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create rsync client: %w", err)
