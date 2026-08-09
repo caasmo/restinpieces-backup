@@ -54,10 +54,9 @@ func main() {
 			os.Exit(1)
 		}
 	} else {
-		// Load the SSH keys once at startup and keep them in memory:
-		// the landlock cage denies per-dial reads of the key files
-		// outside the destination directory and /etc, so every dial
-		// reuses the parsed keys (README "SSH mode").
+		// Load the SSH keys once at startup and keep them in memory,
+		// reused on every dial — the standard ssh-agent pattern
+		// (README "SSH mode").
 		cfgErr := cfg.ValidateSSH()
 		if cfgErr != nil {
 			slog.Error("Backup failed", "error", fmt.Errorf("failed to read SSH config: %w", cfgErr))

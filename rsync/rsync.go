@@ -57,7 +57,12 @@ func newReceiver(sourceDir, destDir string) (*receiver, error) {
 	// rsyncclient writes to a temp file and atomically renames on success.
 	// If the transfer or checksum fails, the destination file is never
 	// touched.
-	rsyncClient, err := rsyncclient.New([]string{"-av"})
+	//
+	// Landlock is deactivated in all cases (DontRestrict): gokrazy
+	// re-applies a landlock ruleset on every Run and the rulesets stack,
+	// capped at 16 per process — a long-lived daemon would exhaust them
+	// (README "Gokrazy's use of landlock").
+	rsyncClient, err := rsyncclient.New([]string{"-av"}, rsyncclient.DontRestrict())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create rsync client: %w", err)
 	}
