@@ -7,6 +7,7 @@ permissions:
 env:
   RSYNC_BIN: rip-rsync
   SFTP_BIN: rip-sftp
+  DAEMON_BIN: rip-rsync-daemon
   ARTIFACT_PREFIX: backup-client
 jobs:
   build:
@@ -42,8 +43,9 @@ jobs:
 
           CGO_ENABLED=0 go build -o "$DIR/${{ env.RSYNC_BIN }}$EXTENSION" -trimpath ./cmd/rsync
           CGO_ENABLED=0 go build -o "$DIR/${{ env.SFTP_BIN }}$EXTENSION" -trimpath ./cmd/sftp
+          CGO_ENABLED=0 go build -o "$DIR/${{ env.DAEMON_BIN }}$EXTENSION" -trimpath ./cmd/rsync-daemon
 
-          for BIN in ${{ env.RSYNC_BIN }} ${{ env.SFTP_BIN }}; do
+          for BIN in ${{ env.RSYNC_BIN }} ${{ env.SFTP_BIN }} ${{ env.DAEMON_BIN }}; do
             if [ "$GOOS" = "windows" ]; then
               zip -j "$BIN-$VERSION-$GOOS-$GOARCH.zip" "$DIR/$BIN$EXTENSION"
             else
@@ -62,6 +64,8 @@ jobs:
             ${{ env.RSYNC_BIN }}-*.zip
             ${{ env.SFTP_BIN }}-*.tar.gz
             ${{ env.SFTP_BIN }}-*.zip
+            ${{ env.DAEMON_BIN }}-*.tar.gz
+            ${{ env.DAEMON_BIN }}-*.zip
   upload:
     name: Upload release binaries
     needs: build
@@ -75,7 +79,7 @@ jobs:
           pattern: ${{ env.ARTIFACT_PREFIX }}-${{ github.ref_name }}-*
           merge-multiple: true
       - name: Upload release artifacts
-        run: gh release upload "$GITHUB_REF_NAME" ${{ env.RSYNC_BIN }}-* ${{ env.SFTP_BIN }}-*
+        run: gh release upload "$GITHUB_REF_NAME" ${{ env.RSYNC_BIN }}-* ${{ env.SFTP_BIN }}-* ${{ env.DAEMON_BIN }}-*
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
