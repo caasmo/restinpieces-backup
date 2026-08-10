@@ -87,11 +87,9 @@ func (c *SSHClient) Run(ctx context.Context) (err error) {
 		return err
 	}
 
-	slog.Info("rsync transfer completed",
-		"bytes_read", result.Stats.Read,
-		"bytes_written", result.Stats.Written,
-		"total_size", result.Stats.Size,
-	)
+	sizeMB := result.Stats.Size / (1024 * 1024)
+	slog.Info(fmt.Sprintf("sender reports: read %d bytes from connection, sent %d bytes, total size of all files on source is %d MB",
+		result.Stats.Read, result.Stats.Written, sizeMB))
 
 	return nil
 }
