@@ -79,7 +79,13 @@ func (d *OriginDaemon) Run() error {
 
 	go func() {
 		defer close(d.ShutdownDone)
-		defer listener.Close()
+		defer func() {
+			// The Stop goroutine may have closed the listener
+			// already; a double close reports net.ErrClosed,
+			// which is the expected shutdown path, not a
+			// failure.
+			_ = listener.Close()
+		}()
 
 		// Stop cancels Ctx; closing the listener unblocks Accept.
 		go func() {
@@ -129,7 +135,7 @@ func (d *OriginDaemon) Run() error {
 		// closes only after the last handler has exited. Handlers
 		// log their own errors and return nil, so Wait reports
 		// nothing on the shutdown path.
-		group.Wait()
+		_ = group.Wait()
 	}()
 	return nil
 }
