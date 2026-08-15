@@ -1,0 +1,64 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"time"
+
+	"github.com/caasmo/go-sqlite-rsync/sqlitersync"
+	"github.com/caasmo/restinpieces-backup-client/backup"
+)
+
+// dialTimeout bounds the local transport's dial: an unreachable peer
+// must not hold the sync loop open.
+const dialTimeout = 10 * time.Second
+
+// defaultSyncTimeout is the longest one sync runs. A sync that takes
+// longer is aborted, releasing the connection. It bounds one sync,
+// not the cadence — the cadence is the daemon's interval
+// (defaultSyncInterval, daemon.go).
+const defaultSyncTimeout = 15 * time.Minute
+
+// Client runs one replica sync of one database against the origin
+// server: connect, send the database label, run the replica side of
+// the protocol over the connection, close.
+type Client interface {
+	// Run performs one full sync. The caller owns ctx, which cancels
+	// the sync at any point: the dial, the preamble write, and the
+	// sync itself all respect ctx.
+	Run(ctx context.Context, label, replicaPath string) error
+}
+
+// runSync sends the label and runs the replica side of the sync over
+// the connection, under the sync deadline. The transports differ only
+// in how they produce the connection; the sync itself is the same for
+// both, so the two Run methods share this tail.
+func runSync(ctx context.Context, conn net.Conn, label, replicaPath string) error {
+	// One context carries both the sync deadline and the caller's
+	// cancellation; the connection is made to respect it.
+	ctx, cancel := context.WithTimeout(ctx, defaultSyncTimeout)
+	defer cancel()
+
+	// Closing the connection unblocks any blocked read or write in
+	// the sync — a property of net.Conn itself, not of the library.
+	// The stop function disarms the callback on the normal path.
+	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopClose()
+
+	// Send the preamble first: the label byte (0x01) plus the database
+	// name. This is the message the origin server reads before it
+	// accepts the sync; a label the server does not know is rejected.
+	err := backup.Write(conn, backup.LabelByte, label)
+	if err != nil {
+		return fmt.Errorf("send label: %w", err)
+	}
+	// Now run the replica side of the protocol: it sends the hashes of
+	// the replica's pages, receives back only the pages that differ,
+	// and blocks until the sync ends.
+	err = sqlitersync.Replica(ctx, conn, replicaPath, nil)
+	if err != nil {
+		return fmt.Errorf("replica sync: %w", err)
+	}
+	return nil
+}
