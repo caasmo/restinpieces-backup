@@ -3,7 +3,6 @@ package main
 
 import (
 	"compress/gzip"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -14,10 +13,10 @@ import (
 	"time"
 
 	"github.com/caasmo/restinpieces-backup-client/config"
+	"github.com/caasmo/restinpieces-backup-client/sqlitedb"
 	"github.com/caasmo/restinpieces-backup-client/ssh"
 	"github.com/pkg/sftp"
 	cryptossh "golang.org/x/crypto/ssh"
-	"zombiezen.com/go/sqlite"
 )
 
 // Config holds the configuration for the pullfile client.
@@ -43,7 +42,6 @@ func main() {
 		LocalBackupDir:    "/home/lipo/backups",
 	}
 
-	ctx := context.Background()
 	slog.Info("Starting pullfile client")
 
 	sftpClient, sshConn, err := setupSftpClient(cfg)
@@ -72,7 +70,8 @@ func main() {
 	}
 	slog.Info("Successfully downloaded backup", "path", localPath)
 
-	if err := verifyBackup(ctx, localPath); err != nil {
+	err = verifyBackup(localPath)
+	if err != nil {
 		slog.Error("Backup verification failed", "error", err)
 		os.Exit(1)
 	}
@@ -159,7 +158,7 @@ func downloadBackup(client *sftp.Client, remoteDir, filename, localDir string) (
 	return localPath, nil
 }
 
-func verifyBackup(ctx context.Context, gzippedBackupPath string) (err error) {
+func verifyBackup(gzippedBackupPath string) (err error) {
 	tempDBPath := filepath.Join(os.TempDir(), fmt.Sprintf("verified-%d.db", time.Now().UnixNano()))
 	err = decompressFile(gzippedBackupPath, tempDBPath)
 	if err != nil {
@@ -172,35 +171,18 @@ func verifyBackup(ctx context.Context, gzippedBackupPath string) (err error) {
 
 	slog.Info("Decompressed backup for verification", "path", tempDBPath)
 
-	conn, err := sqlite.OpenConn(tempDBPath, sqlite.OpenReadOnly)
+	d, err := sqlitedb.New(tempDBPath)
 	if err != nil {
 		return fmt.Errorf("failed to open decompressed database: %w", err)
 	}
 	defer func() {
-		closeErr := conn.Close()
+		closeErr := d.Close()
 		err = errors.Join(err, closeErr)
 	}()
 
-	stmt, err := conn.Prepare("PRAGMA integrity_check;")
+	err = d.Integrity()
 	if err != nil {
-		return fmt.Errorf("failed to prepare integrity_check statement: %w", err)
-	}
-	defer func() {
-		finalizeErr := stmt.Finalize()
-		err = errors.Join(err, finalizeErr)
-	}()
-
-	row, err := stmt.Step()
-	if err != nil {
-		return fmt.Errorf("failed to execute integrity_check: %w", err)
-	}
-	if !row {
-		return fmt.Errorf("integrity_check returned no rows")
-	}
-
-	result := stmt.ColumnText(0)
-	if result != "ok" {
-		return fmt.Errorf("integrity_check failed, result was: %s", result)
+		return fmt.Errorf("backup verification failed: %w", err)
 	}
 
 	return nil

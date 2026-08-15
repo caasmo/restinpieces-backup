@@ -11,7 +11,6 @@ import (
 	"github.com/caasmo/restinpieces-backup-client/landlock"
 	"github.com/caasmo/restinpieces-backup-client/rsync"
 	"github.com/caasmo/restinpieces-backup-client/ssh"
-	"github.com/caasmo/restinpieces-backup-client/verification"
 )
 
 func main() {
@@ -73,7 +72,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	err = verification.VerifyBackup(cfg.DestDir)
+	err = rsync.VerifyBackup(cfg.DestDir)
 	if err != nil {
 		slog.Error("Backup failed", "error", fmt.Errorf("backup verification failed: %w", err))
 		os.Exit(1)

@@ -2,7 +2,7 @@
 // one-shot backup script (cmd/rsync) and the backup daemon. Two client
 // types run the receiver protocol: SSHClient over SSH, LocalClient
 // with the local rsync binary. Post-transfer verification is the
-// caller's job (the verification package).
+// caller's job: VerifyBackup checks the received files.
 package rsync
 
 import (

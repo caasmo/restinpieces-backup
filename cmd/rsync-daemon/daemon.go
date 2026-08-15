@@ -6,7 +6,6 @@ import (
 
 	"github.com/caasmo/go-daemon-runner/daemon"
 	"github.com/caasmo/restinpieces-backup-client/rsync"
-	"github.com/caasmo/restinpieces-backup-client/verification"
 )
 
 // BackupDaemon runs the rsync backup on a fixed interval. The first
@@ -89,7 +88,7 @@ func (d *BackupDaemon) Run() error {
 // backup runs one backup cycle: the transfer, then the verification.
 // The transfer is abortable via d.Ctx (Stop cancels it and the rsync
 // client aborts). The verification is deliberately non-cancellable
-// (verification.VerifyBackup): it is a local read-only scan, so a Stop
+// (rsync.VerifyBackup): it is a local read-only scan, so a Stop
 // landing during it lets the scan run to completion, bounded by the
 // runner's shutdown deadline. Verification is the caller's job (the
 // rsync package never calls it); the daemon performs it right after
@@ -100,7 +99,7 @@ func (d *BackupDaemon) backup() {
 		d.Logger.Error("backup failed", "error", err)
 		return
 	}
-	err = verification.VerifyBackup(d.destDir)
+	err = rsync.VerifyBackup(d.destDir)
 	if err != nil {
 		d.Logger.Error("backup verification failed", "error", err)
 		return
