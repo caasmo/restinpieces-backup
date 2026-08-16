@@ -15,10 +15,10 @@ This repository holds the backup tools of a [restinpieces](https://github.com/ca
 - [`cmd/rsync-daemon`](#rsync-daemon-cmdrsync-daemon) — the same rsync pull, repeated on a fixed interval by an always-on daemon.
 - [`cmd/sftp`](#sftp-command-cmdsftp) — pulls the compressed snapshot archives (`.bck.gz`) over SFTP, decompresses, and verifies with `PRAGMA integrity_check`.
 
-**Continuous replica sync — sqlite3_rsync.** A live database is kept in sync with a replica by two always-on commands that speak the [sqlite3_rsync](https://github.com/caasmo/go-sqlite-rsync) protocol:
+**Continuous replica sync — sqlite3-rsync.** A live database is kept in sync with a replica by two always-on commands that speak the [sqlite3_rsync](https://github.com/caasmo/go-sqlite-rsync) protocol:
 
-- [`cmd/sqlite-rsync-server`](#sqlite3_rsync-origin-cmdsqlite-rsync-server) — the origin: serves databases over TCP, the client decides when to sync.
-- [`cmd/sqlite-rsync-client`](#sqlite3_rsync-client-cmdsqlite-rsync-client) — the replica: connects on a fixed interval and brings the replica database up to the origin's content.
+- [`cmd/sqlite-rsync-server`](#sqlite3-rsync-origin-cmdsqlite-rsync-server) — the origin: serves databases over TCP, the client decides when to sync.
+- [`cmd/sqlite-rsync-client`](#sqlite3-rsync-client-cmdsqlite-rsync-client) — the replica: connects on a fixed interval and brings the replica database up to the origin's content.
 
 If you want point-in-time recovery, use the litestream package — see [restinpieces-litestream](https://github.com/caasmo/restinpieces-litestream).
 
@@ -39,12 +39,13 @@ The snapshot backup system follows a two-step push-pull design: the **server sid
   - [Security](#security)
 - [sftp command (`cmd/sftp`)](#sftp-command-cmdsftp)
   - [Build](#build-2)
-- [sqlite3_rsync origin (`cmd/sqlite-rsync-server`)](#sqlite3_rsync-origin-cmdsqlite-rsync-server)
+- [sqlite3-rsync origin (`cmd/sqlite-rsync-server`)](#sqlite3-rsync-origin-cmdsqlite-rsync-server)
   - [Build](#build-3)
   - [Environment variables](#environment-variables-2)
-- [sqlite3_rsync client (`cmd/sqlite-rsync-client`)](#sqlite3_rsync-client-cmdsqlite-rsync-client)
+- [sqlite3-rsync client (`cmd/sqlite-rsync-client`)](#sqlite3-rsync-client-cmdsqlite-rsync-client)
   - [Build](#build-4)
   - [Environment variables](#environment-variables-3)
+  - [SSH mode (the default)](#ssh-mode-the-default)
   - [Local mode for testing (`-l` / `--local`)](#local-mode-for-testing--l----local-2)
   - [Sync cadence](#sync-cadence)
   - [Signals](#signals-1)
@@ -154,9 +155,9 @@ go build -o sftp-client ./cmd/sftp
 
 The connection parameters and directories are hardcoded in the `Config` struct at the top of `main()` (`SSHUser`, `SSHHost`, `SSHPort`, `SSHPrivateKeyPath`, `SSHHostKeyPath`, `RemoteBackupDir`, `LocalBackupDir`) — edit them, rebuild, and run.
 
-## sqlite3_rsync origin (`cmd/sqlite-rsync-server`)
+## sqlite3-rsync origin (`cmd/sqlite-rsync-server`)
 
-The origin server is the database side of the sqlite3_rsync pair. It listens on one TCP address; every connection names the database it wants to sync with a database label, and the server runs the origin side of the protocol for that database, sending only the pages that differ. The server is reactive: it knows no schedule, the client decides when to sync. It serves a single database for now, the file given in `RIP_BCK_ORIGIN_FILE`, under the fixed label `db`.
+The origin server is the database side of the sqlite3_rsync pair. It listens on one TCP address; every connection names the database it wants to sync with a database label, and the server runs the origin side of the protocol for that database, sending only the pages that differ. The server is reactive: it knows no schedule, the client decides when to sync. The listener is meant for loopback: the client reaches it directly in local mode, or through this machine's SSH server in the default SSH mode (see the client's [SSH mode (the default)](#ssh-mode-the-default)). It serves a single database for now, the file given in `RIP_BCK_ORIGIN_FILE`, under the fixed label `db`.
 
 ### Build
 
@@ -173,7 +174,7 @@ go build -o sqlite-rsync-server ./cmd/sqlite-rsync-server
 
 A sync that runs longer than 15 minutes is aborted, releasing its read transaction on the origin database.
 
-## sqlite3_rsync client (`cmd/sqlite-rsync-client`)
+## sqlite3-rsync client (`cmd/sqlite-rsync-client`)
 
 The client is the replica side of the sqlite3_rsync pair, an always-on daemon. On each interval it connects to the origin server, sends the database label, runs the replica side of the sync, and brings the replica database up to the origin's content. The first sync runs immediately at startup, then one per interval. Two transports produce the connection: the default connects over SSH and reaches the origin's loopback listener through a direct-tcpip channel; `-l`/`--local` dials the listener directly on the same machine. In SSH mode the process confines itself before the first sync.
 
@@ -190,7 +191,11 @@ go build -o sqlite-rsync-client ./cmd/sqlite-rsync-client
 | `RIP_BCK_REPLICA_LABEL` | yes | The database label; it must match the label the origin server serves. The replica database lives at `<dir>/<label>.db` |
 | `RIP_BCK_REPLICA_DIR` | yes | Local directory the replica database is written into (created if missing) |
 
-Everything else is hardcoded for now: the origin address (`127.0.0.1:9909`), the sync interval (15 minutes), and the SSH credentials (user `backup`, host `127.0.0.1`, port `22`, private key at `/etc/restinpieces-backup-client/backup_ed25519`, host key at `/etc/restinpieces-backup-client/host_key`). Edit them in `main.go`, rebuild, and run.
+Everything else is hardcoded for now: the origin address (`127.0.0.1:9909`), the sync interval (15 minutes), and the SSH credentials — see [SSH mode (the default)](#ssh-mode-the-default). Edit them in `main.go`, rebuild, and run.
+
+### SSH mode (the default)
+
+The default transport reaches the origin over SSH. The origin server runs on the machine that also runs the system SSH server and listens on loopback (`127.0.0.1:9909`). Each sync dials that machine's sshd, authenticates with the private key, and opens a direct-tcpip channel — the SSH client asks the SSH server to connect to `127.0.0.1:9909` on its side — then runs the sync over the channel, exactly as in local mode but with the SSH hop in front. Only the system SSH server and the origin process need to run on that machine; no extra port is opened on the origin. The host key is pinned: a dial against a server with any other key fails. The credentials are hardcoded in `main.go` for now: user `backup`, host `127.0.0.1`, port `22`, private key at `/etc/restinpieces-backup-client/backup_ed25519`, host key at `/etc/restinpieces-backup-client/host_key`; the host is a placeholder that points at the local machine so SSH mode can be exercised in a development setup.
 
 ### Local mode for testing (`-l` / `--local`)
 
