@@ -180,12 +180,46 @@ func (d *OriginDaemon) handleConn(conn net.Conn) (err error) {
 
 	// Stop cancels the daemon context, aborting the sync at its next
 	// message boundary.
-	log := d.Logger.With("label", label)
+	log := d.Logger.With("label", label, "role", "origin")
 	log.Info("starting sync", "origin", path)
-	err = sqlitersync.Origin(d.Ctx, conn, path, nil)
+	start := time.Now()
+	stats, err := sqlitersync.Origin(d.Ctx, conn, path, nil)
 	if err != nil {
 		return fmt.Errorf("origin %s: %w", path, err)
 	}
-	log.Info("sync completed")
+	logSyncSummary(log, stats, time.Since(start))
 	return nil
+}
+
+// logSyncSummary logs the completed line of one sync with the run's
+// per-run summary: the raw counters (Stats) plus the derived
+// presentation values of the C -v printout (sqlite3_rsync.c
+// L2392-2417) — database size, transfer speed and speedup. speedup
+// follows the C guard (L2408-2414): it is 0 when the wire traffic was
+// larger than the database, where C omits the value.
+func logSyncSummary(log *slog.Logger, stats sqlitersync.Stats, elapsed time.Duration) {
+	wireBytes := stats.BytesSent + stats.BytesReceived
+	dbSize := uint64(stats.PageCount) * uint64(stats.PageSize)
+	bytesPerSec := float64(0)
+	if elapsed > 0 {
+		bytesPerSec = float64(wireBytes) / elapsed.Seconds()
+	}
+	speedup := float64(0)
+	if wireBytes > 0 && wireBytes <= dbSize {
+		speedup = float64(dbSize) / float64(wireBytes)
+	}
+	log.Info("sync completed",
+		"db_size", dbSize,
+		"page_count", stats.PageCount,
+		"page_size", stats.PageSize,
+		"bytes_sent", stats.BytesSent,
+		"bytes_received", stats.BytesReceived,
+		"page_updates", stats.PageUpdates,
+		"hash_messages", stats.HashMessages,
+		"hash_rounds", stats.HashRounds,
+		"protocol", stats.Protocol,
+		"bytes_per_sec", bytesPerSec,
+		"speedup", speedup,
+		"elapsed", elapsed,
+	)
 }

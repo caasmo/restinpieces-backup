@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+
+	"github.com/caasmo/go-sqlite-rsync/sqlitersync"
 )
 
 // LocalClient syncs against an origin server on the same machine,
@@ -17,14 +19,14 @@ type LocalClient struct {
 var _ Client = (*LocalClient)(nil)
 
 // Run dials the origin listener, then delegates the sync to runSync.
-func (c *LocalClient) Run(ctx context.Context, label, replicaPath string) (err error) {
+func (c *LocalClient) Run(ctx context.Context, label, replicaPath string) (stats sqlitersync.Stats, err error) {
 	// Dial the origin's loopback listener. DialContext bounds the dial
 	// by dialTimeout and aborts it when ctx is cancelled, so an
 	// unreachable server fails the sync quickly and a shutdown does
 	// not wait on a dial in flight.
 	conn, err := (&net.Dialer{Timeout: dialTimeout}).DialContext(ctx, "tcp", c.originAddr)
 	if err != nil {
-		return fmt.Errorf("failed to dial origin: %w", err)
+		return sqlitersync.Stats{}, fmt.Errorf("failed to dial origin: %w", err)
 	}
 	defer func() {
 		closeErr := conn.Close()

@@ -2,9 +2,8 @@
 //
 // A backup is a SQLite database. The DB type opens one read-only: the
 // mode=ro URI parameter opens the file without ever writing to it, and
-// a missing file fails the open instead of being created. The methods
-// run the read-only PRAGMA queries: Integrity checks the database with
-// integrity_check, PageSize and PageCount read the page metadata.
+// a missing file fails the open instead of being created. The Integrity
+// method verifies the database with integrity_check.
 package sqlitedb
 
 import (
@@ -72,27 +71,4 @@ func (d *DB) Integrity() error {
 		return fmt.Errorf("integrity_check failed, result was: %s", result)
 	}
 	return nil
-}
-
-// PageSize returns the page size of the database in bytes. A page is
-// the fixed-size unit the database file is divided into; the file size
-// is PageSize times PageCount.
-func (d *DB) PageSize() (int64, error) {
-	var n int64
-	err := d.db.QueryRow("PRAGMA page_size;").Scan(&n)
-	if err != nil {
-		return 0, fmt.Errorf("failed to read page size: %w", err)
-	}
-	return n, nil
-}
-
-// PageCount returns the number of pages in the database file. The
-// file size is PageSize times PageCount.
-func (d *DB) PageCount() (int64, error) {
-	var n int64
-	err := d.db.QueryRow("PRAGMA page_count;").Scan(&n)
-	if err != nil {
-		return 0, fmt.Errorf("failed to read page count: %w", err)
-	}
-	return n, nil
 }

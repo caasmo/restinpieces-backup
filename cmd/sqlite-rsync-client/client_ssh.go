@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/caasmo/go-sqlite-rsync/sqlitersync"
 	"github.com/caasmo/restinpieces-backup-client/ssh"
 )
 
@@ -22,14 +23,14 @@ var _ Client = (*SSHClient)(nil)
 
 // Run dials the SSH server, opens the direct-tcpip channel to the
 // origin listener, then delegates the sync to runSync.
-func (c *SSHClient) Run(ctx context.Context, label, replicaPath string) (err error) {
+func (c *SSHClient) Run(ctx context.Context, label, replicaPath string) (stats sqlitersync.Stats, err error) {
 	// Dial the machine's system sshd with the in-memory credentials.
 	// The host key is pinned, so a dial against any other server fails.
 	// The ssh package's own 15s timeout bounds the dial itself; the
 	// channel open below is bounded by the AfterFunc close.
 	client, err := ssh.Dial(c.creds)
 	if err != nil {
-		return err
+		return sqlitersync.Stats{}, err
 	}
 	// Closing the SSH client unblocks the channel open when the
 	// context is cancelled — the same pattern runSync applies to the
@@ -46,7 +47,7 @@ func (c *SSHClient) Run(ctx context.Context, label, replicaPath string) (err err
 	// the SSH server.
 	conn, err := client.Dial("tcp", c.originAddr)
 	if err != nil {
-		return fmt.Errorf("failed to open channel to %s: %w", c.originAddr, err)
+		return sqlitersync.Stats{}, fmt.Errorf("failed to open channel to %s: %w", c.originAddr, err)
 	}
 	defer func() {
 		closeErr := conn.Close()

@@ -88,7 +88,7 @@ func TestOriginDaemonServe(t *testing.T) {
 	}
 
 	replicaPath := filepath.Join(t.TempDir(), "replica.db")
-	err = sqlitersync.Replica(context.Background(), conn, replicaPath, nil)
+	_, err = sqlitersync.Replica(context.Background(), conn, replicaPath, nil)
 	if err != nil {
 		t.Fatalf("Replica: %v", err)
 	}

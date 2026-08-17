@@ -74,7 +74,7 @@ func startOrigin(t *testing.T, files map[string]string) string {
 			_ = backup.Write(conn, backup.ErrorByte, "unknown database")
 			return
 		}
-		_ = sqlitersync.Origin(context.Background(), conn, path, nil)
+		_, _ = sqlitersync.Origin(context.Background(), conn, path, nil)
 	}()
 	return listener.Addr().String()
 }
@@ -121,7 +121,7 @@ func TestLocalClientUnknownLabel(t *testing.T) {
 
 	replicaPath := filepath.Join(t.TempDir(), "replica.db")
 	client := &LocalClient{originAddr: originAddr}
-	err := client.Run(context.Background(), "nope", replicaPath)
+	_, err := client.Run(context.Background(), "nope", replicaPath)
 	if err == nil {
 		t.Fatal("sync succeeded for an unknown label")
 	}
