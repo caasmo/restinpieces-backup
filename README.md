@@ -9,56 +9,163 @@
 [![GitHub Release](https://img.shields.io/github/v/release/caasmo/restinpieces-backup?style=flat)]()
 [![Built Go](https://img.shields.io/badge/built_with-Go-00ADD8.svg?style=flat)]()
 
-This repository holds the backup tools of a [restinpieces](https://github.com/caasmo/restinpieces) deployment. Two mechanisms live here, for two different needs:
+This repository holds the backup tools for a [restinpieces](https://github.com/caasmo/restinpieces) deployment.
 
-**Snapshot pull — the backup local simple strategy.** The server side creates local snapshots of each database as `latest-*.db` hard links; these commands pull the snapshots to the backup machine and verify them:
+`cmd/sqlite-rsync-server` and `cmd/sqlite-rsync-client` keep a live database and a replica — a second copy of the database — in continuous sync. Over the [sqlite3_rsync](https://github.com/caasmo/go-sqlite-rsync) protocol the replica receives only the parts that changed, so it always matches the live database without copying the whole file.
 
-- [`cmd/rsync`](#rsync-command-cmdrsync) — pulls the `latest-*.db` hard links via the rsync protocol (over SSH, or locally), then verifies every received database with `PRAGMA integrity_check`.
-- [`cmd/rsync-daemon`](#rsync-daemon-cmdrsync-daemon) — the same rsync pull, repeated on a fixed interval by an always-on daemon.
-- [`cmd/sftp`](#sftp-command-cmdsftp) — pulls the compressed snapshot archives (`.bck.gz`) over SFTP, decompresses, and verifies with `PRAGMA integrity_check`.
+A snapshot is a full copy of a database, frozen at one moment in time. The snapshot tools come in two steps: making a snapshot, then moving it to another machine.
 
-**Continuous replica sync — sqlite3-rsync.** A live database is kept in sync with a replica by two always-on commands that speak the [sqlite3_rsync](https://github.com/caasmo/go-sqlite-rsync) protocol:
+`cmd/local-copy` makes the snapshots on the machine that runs the databases: it produces a snapshot of each database at a fixed interval and keeps a hard link — a second name for the same file — to the last snapshot.
 
-- [`cmd/sqlite-rsync-server`](#sqlite3-rsync-origin-cmdsqlite-rsync-server) — the origin: serves databases over TCP, the client decides when to sync.
-- [`cmd/sqlite-rsync-client`](#sqlite3-rsync-client-cmdsqlite-rsync-client) — the replica: connects on a fixed interval and brings the replica database up to the origin's content.
+`cmd/rsync`, `cmd/rsync-daemon`, and `cmd/sftp` move snapshots to a backup machine, so a broken server does not lose its backups. They pull the `latest-*.db` links (or the compressed `.bck.gz` archives) and verify every received database with `PRAGMA integrity_check` — SQLite's built-in check that a database file is not corrupted.
 
-If you want point-in-time recovery, use the litestream package — see [restinpieces-litestream](https://github.com/caasmo/restinpieces-litestream).
-
-The snapshot backup system follows a two-step push-pull design: the **server side** — creating server local snapshots via a background job — is built into restinpieces itself (see [doc/backup.md](https://github.com/caasmo/restinpieces/blob/master/doc/backup.md)). This repository provides the **client side**: one-shot binaries that run in a client machine and pull the backups and verify their integrity. The sqlite3_rsync pair turns this around: its origin server lives in this repository and runs on the machine with the live database, while the client runs on the backup machine and syncs on its own schedule.
+If you need to restore a database to any past moment, not just the latest snapshot, use the litestream package — see [restinpieces-litestream](https://github.com/caasmo/restinpieces-litestream).
 
 # Content
 
-- [rsync command (`cmd/rsync`)](#rsync-command-cmdrsync)
+- [sqlite3-rsync origin (`cmd/sqlite-rsync-server`)](#sqlite3-rsync-origin-cmdsqlite-rsync-server)
   - [Build](#build)
   - [Environment variables](#environment-variables)
-  - [Local mode for testing (`-l` / `--local`)](#local-mode-for-testing--l----local)
-- [rsync daemon (`cmd/rsync-daemon`)](#rsync-daemon-cmdrsync-daemon)
+- [sqlite3-rsync client (`cmd/sqlite-rsync-client`)](#sqlite3-rsync-client-cmdsqlite-rsync-client)
   - [Build](#build-1)
   - [Environment variables](#environment-variables-1)
-  - [Local mode for testing (`-l` / `--local`)](#local-mode-for-testing--l----local-1)
-  - [Backup cadence](#backup-cadence)
+  - [SSH mode (the default)](#ssh-mode-the-default)
+  - [Local mode for testing (`-l` / `--local`)](#local-mode-for-testing--l----local)
   - [Signals](#signals)
   - [Security](#security)
-- [sftp command (`cmd/sftp`)](#sftp-command-cmdsftp)
+- [local-copy daemon (`cmd/local-copy`)](#local-copy-daemon-cmdlocal-copy)
   - [Build](#build-2)
-- [sqlite3-rsync origin (`cmd/sqlite-rsync-server`)](#sqlite3-rsync-origin-cmdsqlite-rsync-server)
+  - [Configuration](#configuration)
+  - [Backup cadence](#backup-cadence)
+  - [Signals](#signals-1)
+- [rsync command (`cmd/rsync`)](#rsync-command-cmdrsync)
   - [Build](#build-3)
   - [Environment variables](#environment-variables-2)
-- [sqlite3-rsync client (`cmd/sqlite-rsync-client`)](#sqlite3-rsync-client-cmdsqlite-rsync-client)
+  - [Local mode for testing (`-l` / `--local`)](#local-mode-for-testing--l----local-1)
+- [rsync daemon (`cmd/rsync-daemon`)](#rsync-daemon-cmdrsync-daemon)
   - [Build](#build-4)
   - [Environment variables](#environment-variables-3)
-  - [SSH mode (the default)](#ssh-mode-the-default)
   - [Local mode for testing (`-l` / `--local`)](#local-mode-for-testing--l----local-2)
-  - [Sync cadence](#sync-cadence)
-  - [Signals](#signals-1)
+  - [Backup cadence](#backup-cadence-1)
+  - [Signals](#signals-2)
   - [Security](#security-1)
+- [sftp command (`cmd/sftp`)](#sftp-command-cmdsftp)
+  - [Build](#build-5)
 - [Running on a schedule](#running-on-a-schedule)
   - [Cron](#cron)
   - [Systemd timer](#systemd-timer)
 
+## sqlite3-rsync origin (`cmd/sqlite-rsync-server`)
+
+The origin server runs on the machine that holds the live database. It listens on one TCP address, and for every connection it sends only the parts that changed, so the client receives just the changes instead of the whole file. The server never starts a sync on its own: the client decides when. It serves a single database for now, the file given in `RIP_BCK_ORIGIN_FILE`.
+
+### Build
+
+```bash
+go build -o sqlite-rsync-server ./cmd/sqlite-rsync-server
+```
+
+### Environment variables
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `RIP_BCK_ORIGIN_LISTEN_ADDR` | yes | TCP address the server listens on, e.g. `127.0.0.1:9909` |
+| `RIP_BCK_ORIGIN_FILE` | yes | Path to the live database file; the database must be in WAL mode (SQLite's journal mode, which lets the app write while the sync reads) |
+
+A sync that runs longer than 15 minutes is aborted, so the origin is never blocked for long.
+
+## sqlite3-rsync client (`cmd/sqlite-rsync-client`)
+
+The client is an always-on daemon that copies the origin's database to a replica. On each interval it connects to the origin server and brings the replica database up to the origin's content. Two ways to connect: over SSH (the default), or directly on the same machine with `-l`/`--local`.
+
+### Build
+
+```bash
+go build -o sqlite-rsync-client ./cmd/sqlite-rsync-client
+```
+
+### Environment variables
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `RIP_BCK_REPLICA_LABEL` | yes | The name both sides use for the database (the origin serves `db` for now); the replica lives at `<dir>/<label>.db` |
+| `RIP_BCK_REPLICA_DIR` | yes | Local directory the replica database is written into (created if missing) |
+
+Everything else is hardcoded for now: the origin address (`127.0.0.1:9909`), the sync interval (15 minutes), and the SSH credentials — see [SSH mode (the default)](#ssh-mode-the-default). Edit them in `main.go`, rebuild, and run.
+
+### SSH mode (the default)
+
+The default transport reaches the origin over SSH. The origin server runs on the machine that also runs the system SSH server and listens on `127.0.0.1:9909`. Each sync connects to that machine's sshd, authenticates with the private key, and asks the SSH server to open the connection to `127.0.0.1:9909` on its side — the sync then runs over that connection, exactly as in local mode but with the SSH hop in front. No extra port is opened on the origin. The host key is pinned: a connection to a server with any other key fails. The credentials are hardcoded in `main.go` for now: user `backup`, host `127.0.0.1`, port `22`, private key at `/etc/restinpieces-backup/backup_ed25519`, host key at `/etc/restinpieces-backup/host_key`; the host is a placeholder that points at the local machine so SSH mode can be exercised in a development setup.
+
+### Local mode for testing (`-l` / `--local`)
+
+`-l` runs the sync without SSH: the client connects to the origin's listener directly. This is how to test both programs on one machine. Start the server in one terminal, then run the client in a second:
+
+```bash
+# Terminal 1 — origin server
+RIP_BCK_ORIGIN_LISTEN_ADDR=127.0.0.1:9909 RIP_BCK_ORIGIN_FILE=/tmp/origin.db ./sqlite-rsync-server
+```
+
+```bash
+# Terminal 2 — client in local mode
+RIP_BCK_REPLICA_LABEL=db RIP_BCK_REPLICA_DIR=/tmp/replica ./sqlite-rsync-client -l
+```
+
+### Signals
+
+SIGINT, SIGQUIT, and SIGTERM stop the daemon gracefully: the in-flight sync is cancelled, the connection is closed to unblock a sync stuck reading or writing, and the process exits within 15 seconds.
+
+### Security
+
+In SSH mode the client loads the SSH keys into memory once at startup, then restricts itself before the first sync: the process may access only the replica directory (read/write) and `/etc` (read-only), so a bug or a malicious origin cannot read or write anything beyond that. The restriction uses the landlock sandbox described in [cmd/rsync-daemon/README.md](cmd/rsync-daemon/README.md). Local mode is the trusted same-machine transport and runs without the restriction.
+
+## local-copy daemon (`cmd/local-copy`)
+
+`cmd/local-copy` copies the databases on a machine into local backup directories: it produces a snapshot of each database at a fixed interval and updates a hard link to the last snapshot. The rsync and sftp commands use that link as their sync target.
+
+### Build
+
+```bash
+go build -o local-copy ./cmd/local-copy
+```
+
+### Configuration
+
+The daemon reads a TOML file (default `/etc/restinpieces-backup/local-copy.toml`, override with `-config <path>`). Each database is one `[files.<key>]` section; `<key>` is a name you choose, for example `app_db`:
+
+```toml
+[files.app_db]
+source_path = "/data/app.db"
+dest_path = "/data/backups"
+frequency = "24h"
+```
+
+| Field | Description |
+| --- | --- |
+| `source_path` | The database file to back up (required) |
+| `dest_path` | Directory the snapshots go into (required) |
+| `frequency` | How often to back up this database, as a Go duration such as `24h` (required) |
+| `strategy` | `online` (default) copies the live database in small steps; `vacuum` first compacts a private copy, then copies it |
+| `compression` | `true` writes a gzip-compressed `.bck.gz` snapshot; `false` (default) writes a plain `.db` copy |
+| `online_api_pages_per_step` | In online mode, how many pages (SQLite's unit of storage) each step copies (default 100) |
+| `online_api_sleep_interval` | Pause between online steps, as a Go duration (default `10ms`) |
+
+At startup every entry is validated — the paths must exist and `frequency` must be positive — and a broken config refuses to start. An entry whose `source_path` or `dest_path` is empty is skipped. Snapshot files are named `<key>-<name>-<timestamp>.db` (or `.bck.gz` when compressed); the `latest-` link is kept for plain snapshots only.
+
+### Backup cadence
+
+- The first backup runs immediately at startup; the next one starts one full interval after the previous one completes.
+- The interval is the smallest `frequency` among the configured entries.
+- Backups run one at a time: a tick that fires while a backup is still running is dropped.
+- A failing backup is logged and retried on the next tick — the daemon never exits on a failure.
+
+### Signals
+
+SIGINT, SIGQUIT, and SIGTERM stop the daemon gracefully: the in-flight backup is cancelled and the process exits. A copy aborted mid-way by the shutdown is not an error — the next backup covers it.
+
 ## rsync command (`cmd/rsync`)
 
-The rsync client runs as the receiver: it starts the `rsync` binary in server (sender) mode — over SSH, or locally on the same machine with `-l` — and pulls every `latest-*.db` file (the `latest-<backupID>.db` hard links the server maintains) into a local destination directory. Files are written atomically (temp file + rename), and every received database must pass `PRAGMA integrity_check`.
+The rsync client runs as the receiver: it starts the `rsync` binary in server (sender) mode — over SSH, or locally on the same machine with `-l` — and pulls every `latest-*.db` file (the hard links the local-copy daemon keeps) into a local destination directory. Files are written atomically (temp file + rename), and every received database must pass `PRAGMA integrity_check`.
 
 ### Build
 
@@ -84,7 +191,7 @@ The machine that runs the rsync server side (the remote host in SSH mode, the lo
 
 ### Local mode for testing (`-l` / `--local`)
 
-`-l` runs the whole pipeline without SSH: the client starts the local `rsync` binary in server mode on the same machine and pulls from a local `RIP_BCK_SOURCE_DIR`. This is how to test the full transfer pipeline — protocol, delta transfer, atomic rename, integrity check — on the server machine itself (where the backup directory with the `latest-*.db` hard links already lives) or on any machine that has a copy of the source directory and an `rsync` binary in PATH:
+`-l` runs the whole pipeline without SSH: the client starts the local `rsync` binary in server mode on the same machine and pulls from a local `RIP_BCK_SOURCE_DIR`. This is how to test the whole pipeline without a remote machine: run it on the server itself (where the backup directory with the `latest-*.db` hard links already lives) or on any machine that has a copy of the source directory and an `rsync` binary in PATH:
 
 ```bash
 RIP_BCK_SOURCE_DIR=/var/backups RIP_BCK_DEST_DIR=./backups ./backup-client -l
@@ -94,7 +201,7 @@ In local mode the source glob is expanded by the client itself (there is no shel
 
 ## rsync daemon (`cmd/rsync-daemon`)
 
-The rsync daemon performs the same transfer as the [rsync command](#rsync-command-cmdrsync) — the receiver protocol over SSH (or locally with `-l`), pulling the `latest-*.db` hard links, atomic writes, `PRAGMA integrity_check` — but on a fixed interval instead of once. It is the always-on alternative to scheduling the one-shot command: it keeps running, takes a backup immediately at startup, and repeats it every interval.
+The rsync daemon performs the same transfer as the [rsync command](#rsync-command-cmdrsync) — the receiver protocol over SSH (or locally with `-l`), pulling the `latest-*.db` hard links, atomic writes, `PRAGMA integrity_check` — but on a fixed interval instead of once. It is the always-on alternative to scheduling the one-shot command.
 
 ### Build
 
@@ -121,13 +228,13 @@ The machine that runs the rsync server side (the remote host in SSH mode, the lo
 
 ### Local mode for testing (`-l` / `--local`)
 
-`-l` runs the whole pipeline without SSH: the client starts the local `rsync` binary in server mode on the same machine and pulls from a local `RIP_BCK_SOURCE_DIR`. This is how to test the full transfer pipeline — protocol, delta transfer, atomic rename, integrity check — on the server machine itself (where the backup directory with the `latest-*.db` hard links already lives) or on any machine that has a copy of the source directory and an `rsync` binary in PATH:
+`-l` runs the whole pipeline without SSH: the client starts the local `rsync` binary in server mode on the same machine and pulls from a local `RIP_BCK_SOURCE_DIR`. This is how to test the whole pipeline without a remote machine: run it on the server itself (where the backup directory with the `latest-*.db` hard links already lives) or on any machine that has a copy of the source directory and an `rsync` binary in PATH:
 
 ```bash
 RIP_BCK_SOURCE_DIR=/var/backups RIP_BCK_DEST_DIR=./backups RIP_BCK_INTERVAL=5m ./backup-daemon -l
 ```
 
-The first backup runs immediately at startup, then one per interval; Ctrl-C stops the daemon gracefully. In local mode the source glob is expanded by the client itself (there is no shell in between), so zero matches fail before the transfer starts with `no backup files received: server glob matched nothing`.
+Ctrl-C stops the daemon gracefully. In local mode the source glob is expanded by the client itself (there is no shell in between), so zero matches fail before the transfer starts with `no backup files received: server glob matched nothing`.
 
 ### Backup cadence
 
@@ -139,15 +246,15 @@ The first backup runs immediately at startup, then one per interval; Ctrl-C stop
 
 ### Signals
 
-SIGINT, SIGQUIT, and SIGTERM trigger a graceful shutdown: the runner cancels the in-flight transfer and waits up to 15 seconds for the daemon to stop. A stop that lands during the (non-cancellable) verification scan lets the scan run to completion within that deadline.
+SIGINT, SIGQUIT, and SIGTERM stop the daemon gracefully: the in-flight transfer is cancelled and the process has up to 15 seconds to exit; a verification scan that is already running is allowed to finish within that time.
 
 ### Security
 
-The daemon's security architecture is documented in [cmd/rsync-daemon/README.md](cmd/rsync-daemon/README.md): the gokrazy landlock sandbox and the threat it addresses, the daemon's security choices (in-memory SSH keys, landlock applied once at startup in SSH mode, deactivated in local mode), and the optional systemd hardening.
+The daemon's security is documented in [cmd/rsync-daemon/README.md](cmd/rsync-daemon/README.md): the landlock sandbox and the threat it addresses, the in-memory SSH keys, and the optional systemd hardening.
 
 ## sftp command (`cmd/sftp`)
 
-The SFTP client connects to the server with a pinned host key, opens an SFTP session, lists the remote backup directory, picks the most recent snapshot by filename (names are timestamp-based, so lexical sorting yields the latest), downloads it, decompresses the `.bck.gz` archive, and verifies the resulting database with `PRAGMA integrity_check`.
+The SFTP client connects to the server with a pinned host key, opens an SFTP session, lists the remote backup directory, picks the most recent snapshot by filename (names carry a timestamp, so sorting the names finds the latest), downloads it, decompresses the `.bck.gz` archive, and verifies the resulting database with `PRAGMA integrity_check`.
 
 ### Build
 
@@ -156,87 +263,6 @@ go build -o sftp-client ./cmd/sftp
 ```
 
 The connection parameters and directories are hardcoded in the `Config` struct at the top of `main()` (`SSHUser`, `SSHHost`, `SSHPort`, `SSHPrivateKeyPath`, `SSHHostKeyPath`, `RemoteBackupDir`, `LocalBackupDir`) — edit them, rebuild, and run.
-
-## sqlite3-rsync origin (`cmd/sqlite-rsync-server`)
-
-The origin server is the database side of the sqlite3_rsync pair. It listens on one TCP address; every connection names the database it wants to sync with a database label, and the server runs the origin side of the protocol for that database, sending only the pages that differ. The server is reactive: it knows no schedule, the client decides when to sync. The listener is meant for loopback: the client reaches it directly in local mode, or through this machine's SSH server in the default SSH mode (see the client's [SSH mode (the default)](#ssh-mode-the-default)). It serves a single database for now, the file given in `RIP_BCK_ORIGIN_FILE`, under the fixed label `db`.
-
-### Build
-
-```bash
-go build -o sqlite-rsync-server ./cmd/sqlite-rsync-server
-```
-
-### Environment variables
-
-| Variable | Required | Description |
-| --- | --- | --- |
-| `RIP_BCK_ORIGIN_LISTEN_ADDR` | yes | TCP address the server listens on, e.g. `127.0.0.1:9909` |
-| `RIP_BCK_ORIGIN_FILE` | yes | Path to the origin database file, served under the fixed label `db`; the database must be in WAL mode |
-
-A sync that runs longer than 15 minutes is aborted, releasing its read transaction on the origin database.
-
-## sqlite3-rsync client (`cmd/sqlite-rsync-client`)
-
-The client is the replica side of the sqlite3_rsync pair, an always-on daemon. On each interval it connects to the origin server, sends the database label, runs the replica side of the sync, and brings the replica database up to the origin's content. The first sync runs immediately at startup, then one per interval. Two transports produce the connection: the default connects over SSH and reaches the origin's loopback listener through a direct-tcpip channel; `-l`/`--local` dials the listener directly on the same machine. In SSH mode the process confines itself before the first sync.
-
-### Build
-
-```bash
-go build -o sqlite-rsync-client ./cmd/sqlite-rsync-client
-```
-
-### Environment variables
-
-| Variable | Required | Description |
-| --- | --- | --- |
-| `RIP_BCK_REPLICA_LABEL` | yes | The database label; it must match the label the origin server serves. The replica database lives at `<dir>/<label>.db` |
-| `RIP_BCK_REPLICA_DIR` | yes | Local directory the replica database is written into (created if missing) |
-
-Everything else is hardcoded for now: the origin address (`127.0.0.1:9909`), the sync interval (15 minutes), and the SSH credentials — see [SSH mode (the default)](#ssh-mode-the-default). Edit them in `main.go`, rebuild, and run.
-
-### SSH mode (the default)
-
-The default transport reaches the origin over SSH. The origin server runs on the machine that also runs the system SSH server and listens on loopback (`127.0.0.1:9909`). Each sync dials that machine's sshd, authenticates with the private key, and opens a direct-tcpip channel — the SSH client asks the SSH server to connect to `127.0.0.1:9909` on its side — then runs the sync over the channel, exactly as in local mode but with the SSH hop in front. Only the system SSH server and the origin process need to run on that machine; no extra port is opened on the origin. The host key is pinned: a dial against a server with any other key fails. The credentials are hardcoded in `main.go` for now: user `backup`, host `127.0.0.1`, port `22`, private key at `/etc/restinpieces-backup/backup_ed25519`, host key at `/etc/restinpieces-backup/host_key`; the host is a placeholder that points at the local machine so SSH mode can be exercised in a development setup.
-
-### Local mode for testing (`-l` / `--local`)
-
-`-l` runs the sync without SSH: the client dials the origin's loopback listener directly. This is how to test the whole pair on one machine. Create a WAL-mode origin database, start the server in one terminal, then run the client in a second:
-
-```bash
-sqlite3 /tmp/origin.db "PRAGMA journal_mode=WAL; CREATE TABLE t(x); INSERT INTO t VALUES(1);"
-```
-
-```bash
-# Terminal 1 — origin server
-RIP_BCK_ORIGIN_LISTEN_ADDR=127.0.0.1:9909 RIP_BCK_ORIGIN_FILE=/tmp/origin.db ./sqlite-rsync-server
-```
-
-```bash
-# Terminal 2 — client in local mode; the server serves the fixed label "db"
-RIP_BCK_REPLICA_LABEL=db RIP_BCK_REPLICA_DIR=/tmp/replica ./sqlite-rsync-client -l
-```
-
-The client logs `starting sync` and `sync completed` immediately at startup, then stays up until the next interval. Check that the replica holds the origin's content, then Ctrl-C both processes:
-
-```bash
-sqlite3 /tmp/replica/db.db "SELECT * FROM t;"
-```
-
-### Sync cadence
-
-- The first sync runs immediately at startup; the next one starts one full interval after the previous sync completes.
-- Syncs run one at a time: a tick that fires while a sync is still running is dropped, so at most one sync per interval is guaranteed.
-- A single sync is bounded by a 15-minute timeout: one that takes longer is aborted, releasing the connection.
-- A failing sync (unreachable origin, rejected label, transfer error) is logged and the next tick retries — the daemon never exits on a failure.
-
-### Signals
-
-SIGINT, SIGQUIT, and SIGTERM trigger a graceful shutdown: the runner cancels the in-flight sync and waits up to 15 seconds for the daemon to stop. The daemon closes its connection to unblock a sync stuck reading or writing.
-
-### Security
-
-In SSH mode the client loads the SSH keys into memory once at startup, then confines itself with the landlock sandbox before the first sync: the process may access only the replica directory (read/write) and `/etc` (read-only), so a bug or a malicious origin cannot read or write anything beyond that. The sandbox is described in [cmd/rsync-daemon/README.md](cmd/rsync-daemon/README.md). Local mode is the trusted same-machine transport and runs unsandboxed.
 
 ## Running on a schedule
 
