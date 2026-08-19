@@ -12,9 +12,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/caasmo/restinpieces-backup-client/config"
-	"github.com/caasmo/restinpieces-backup-client/sqlitedb"
-	"github.com/caasmo/restinpieces-backup-client/ssh"
+	"github.com/caasmo/restinpieces-backup/config"
+	"github.com/caasmo/restinpieces-backup/sqlitedb"
+	"github.com/caasmo/restinpieces-backup/ssh"
 	"github.com/pkg/sftp"
 	cryptossh "golang.org/x/crypto/ssh"
 )

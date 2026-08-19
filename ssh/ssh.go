@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/caasmo/restinpieces-backup-client/config"
+	"github.com/caasmo/restinpieces-backup/config"
 	cryptossh "golang.org/x/crypto/ssh"
 )
 

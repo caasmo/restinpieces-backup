@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/caasmo/go-sqlite-rsync/sqlitersync"
-	"github.com/caasmo/restinpieces-backup-client/ssh"
+	"github.com/caasmo/restinpieces-backup/ssh"
 )
 
 // SSHClient syncs against an origin server on another machine: it

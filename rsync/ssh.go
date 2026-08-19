@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/caasmo/restinpieces-backup-client/ssh"
+	"github.com/caasmo/restinpieces-backup/ssh"
 )
 
 // SSHClient pulls the latest-*.db files from a remote server over SSH.

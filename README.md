@@ -1,10 +1,10 @@
-# restinpieces-backup-client
+# restinpieces-backup
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/caasmo/restinpieces-backup-client)](https://pkg.go.dev/github.com/caasmo/restinpieces-backup-client)
-[![golangci-lint](https://github.com/caasmo/restinpieces-backup-client/actions/workflows/golangci-lint.yml/badge.svg)](https://github.com/caasmo/restinpieces-backup-client/actions/workflows/golangci-lint.yml)
-[![sloc](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/caasmo/restinpieces-backup-client/master/.github/badges/sloc.json)](https://github.com/caasmo/restinpieces-backup-client/actions/workflows/sloc.yml)
-[![deps](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/caasmo/restinpieces-backup-client/master/.github/badges/deps.json)](https://github.com/caasmo/restinpieces-backup-client/actions/workflows/dependencies.yml)
-[![GitHub Release](https://img.shields.io/github/v/release/caasmo/restinpieces-backup-client?style=flat)]()
+[![Go Reference](https://pkg.go.dev/badge/github.com/caasmo/restinpieces-backup)](https://pkg.go.dev/github.com/caasmo/restinpieces-backup)
+[![golangci-lint](https://github.com/caasmo/restinpieces-backup/actions/workflows/golangci-lint.yml/badge.svg)](https://github.com/caasmo/restinpieces-backup/actions/workflows/golangci-lint.yml)
+[![sloc](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/caasmo/restinpieces-backup/master/.github/badges/sloc.json)](https://github.com/caasmo/restinpieces-backup/actions/workflows/sloc.yml)
+[![deps](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/caasmo/restinpieces-backup/master/.github/badges/deps.json)](https://github.com/caasmo/restinpieces-backup/actions/workflows/dependencies.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/caasmo/restinpieces-backup?style=flat)]()
 [![Built Go](https://img.shields.io/badge/built_with-Go-00ADD8.svg?style=flat)]()
 
 This repository holds the backup tools of a [restinpieces](https://github.com/caasmo/restinpieces) deployment. Two mechanisms live here, for two different needs:
@@ -195,7 +195,7 @@ Everything else is hardcoded for now: the origin address (`127.0.0.1:9909`), the
 
 ### SSH mode (the default)
 
-The default transport reaches the origin over SSH. The origin server runs on the machine that also runs the system SSH server and listens on loopback (`127.0.0.1:9909`). Each sync dials that machine's sshd, authenticates with the private key, and opens a direct-tcpip channel — the SSH client asks the SSH server to connect to `127.0.0.1:9909` on its side — then runs the sync over the channel, exactly as in local mode but with the SSH hop in front. Only the system SSH server and the origin process need to run on that machine; no extra port is opened on the origin. The host key is pinned: a dial against a server with any other key fails. The credentials are hardcoded in `main.go` for now: user `backup`, host `127.0.0.1`, port `22`, private key at `/etc/restinpieces-backup-client/backup_ed25519`, host key at `/etc/restinpieces-backup-client/host_key`; the host is a placeholder that points at the local machine so SSH mode can be exercised in a development setup.
+The default transport reaches the origin over SSH. The origin server runs on the machine that also runs the system SSH server and listens on loopback (`127.0.0.1:9909`). Each sync dials that machine's sshd, authenticates with the private key, and opens a direct-tcpip channel — the SSH client asks the SSH server to connect to `127.0.0.1:9909` on its side — then runs the sync over the channel, exactly as in local mode but with the SSH hop in front. Only the system SSH server and the origin process need to run on that machine; no extra port is opened on the origin. The host key is pinned: a dial against a server with any other key fails. The credentials are hardcoded in `main.go` for now: user `backup`, host `127.0.0.1`, port `22`, private key at `/etc/restinpieces-backup/backup_ed25519`, host key at `/etc/restinpieces-backup/host_key`; the host is a placeholder that points at the local machine so SSH mode can be exercised in a development setup.
 
 ### Local mode for testing (`-l` / `--local`)
 

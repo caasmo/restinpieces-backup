@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/caasmo/restinpieces-backup-client/sqlitedb"
+	"github.com/caasmo/restinpieces-backup/sqlitedb"
 	ripbackup "github.com/caasmo/restinpieces/backup"
 )
 

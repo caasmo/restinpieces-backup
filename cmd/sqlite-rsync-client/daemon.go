@@ -130,13 +130,13 @@ func (d *ReplicaDaemon) syncOne(label, path string) {
 func logSyncSummary(log *slog.Logger, stats sqlitersync.Stats, elapsed time.Duration) {
 	wireBytes := stats.BytesSent + stats.BytesReceived
 	dbSize := uint64(stats.PageCount) * uint64(stats.PageSize)
-	bytesPerSec := float64(0)
+	bytesPerSec := 0
 	if elapsed > 0 {
-		bytesPerSec = float64(wireBytes) / elapsed.Seconds()
+		bytesPerSec = int(float64(wireBytes) / elapsed.Seconds())
 	}
-	speedup := float64(0)
+	speedup := 0
 	if wireBytes > 0 && wireBytes <= dbSize {
-		speedup = float64(dbSize) / float64(wireBytes)
+		speedup = int(float64(dbSize) / float64(wireBytes))
 	}
 	log.Info("sync completed",
 		"db_size", dbSize,
@@ -150,6 +150,6 @@ func logSyncSummary(log *slog.Logger, stats sqlitersync.Stats, elapsed time.Dura
 		"protocol", stats.Protocol,
 		"bytes_per_sec", bytesPerSec,
 		"speedup", speedup,
-		"elapsed", elapsed,
+		"elapsed", int(elapsed.Seconds()),
 	)
 }

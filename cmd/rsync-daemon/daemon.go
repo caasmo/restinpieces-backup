@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/caasmo/go-daemon-runner/daemon"
-	"github.com/caasmo/restinpieces-backup-client/rsync"
+	"github.com/caasmo/restinpieces-backup/rsync"
 )
 
 // BackupDaemon runs the rsync backup on a fixed interval. The first

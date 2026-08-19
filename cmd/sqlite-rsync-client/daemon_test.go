@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/caasmo/go-sqlite-rsync/sqlitersync"
-	"github.com/caasmo/restinpieces-backup-client/backup"
+	"github.com/caasmo/restinpieces-backup/backup"
 )
 
 // createWalDB creates a database file in WAL mode holding one table

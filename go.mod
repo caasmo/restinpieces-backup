@@ -1,4 +1,4 @@
-module github.com/caasmo/restinpieces-backup-client
+module github.com/caasmo/restinpieces-backup
 
 go 1.25.0
 

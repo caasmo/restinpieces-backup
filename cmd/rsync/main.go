@@ -7,10 +7,10 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/caasmo/restinpieces-backup-client/config"
-	"github.com/caasmo/restinpieces-backup-client/landlock"
-	"github.com/caasmo/restinpieces-backup-client/rsync"
-	"github.com/caasmo/restinpieces-backup-client/ssh"
+	"github.com/caasmo/restinpieces-backup/config"
+	"github.com/caasmo/restinpieces-backup/landlock"
+	"github.com/caasmo/restinpieces-backup/rsync"
+	"github.com/caasmo/restinpieces-backup/ssh"
 )
 
 func main() {

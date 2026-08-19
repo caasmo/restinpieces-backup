@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/caasmo/go-daemon-runner/run"
-	"github.com/caasmo/restinpieces-backup-client/config"
-	"github.com/caasmo/restinpieces-backup-client/landlock"
-	"github.com/caasmo/restinpieces-backup-client/ssh"
+	"github.com/caasmo/restinpieces-backup/config"
+	"github.com/caasmo/restinpieces-backup/landlock"
+	"github.com/caasmo/restinpieces-backup/ssh"
 )
 
 // Hardcoded configuration for the initial client: one database, one
@@ -79,8 +79,8 @@ func main() {
 			User:           "backup",
 			Host:           "127.0.0.1",
 			Port:           "22",
-			PrivateKeyPath: "/etc/restinpieces-backup-client/backup_ed25519",
-			HostKeyPath:    "/etc/restinpieces-backup-client/host_key",
+			PrivateKeyPath: "/etc/restinpieces-backup/backup_ed25519",
+			HostKeyPath:    "/etc/restinpieces-backup/host_key",
 		})
 		if loadErr != nil {
 			slog.Error("failed to load SSH credentials", "error", loadErr)

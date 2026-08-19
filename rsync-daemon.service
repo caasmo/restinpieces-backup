@@ -1,6 +1,6 @@
 [Unit]
 Description=restinpieces backup daemon (rsync pull)
-Documentation=https://github.com/caasmo/restinpieces-backup-client
+Documentation=https://github.com/caasmo/restinpieces-backup
 After=network-online.target
 Wants=network-online.target
 

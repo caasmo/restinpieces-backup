@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/caasmo/go-sqlite-rsync/sqlitersync"
-	"github.com/caasmo/restinpieces-backup-client/backup"
+	"github.com/caasmo/restinpieces-backup/backup"
 )
 
 // dialTimeout bounds the local transport's dial: an unreachable peer
