@@ -2,12 +2,17 @@ module github.com/caasmo/restinpieces-backup
 
 go 1.25.0
 
+// Temporary: consumes the renamed config.Backup shape before the
+// restinpieces release that carries it; drop when released.
+replace github.com/caasmo/restinpieces => ../restinpieces
+
 require (
 	github.com/caasmo/go-daemon-runner v0.1.0
 	github.com/caasmo/go-sqlite-rsync v0.7.0
 	github.com/caasmo/restinpieces v0.15.0
 	github.com/gokrazy/rsync v0.3.4
 	github.com/landlock-lsm/go-landlock v0.9.0
+	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/pkg/sftp v1.13.9
 	golang.org/x/crypto v0.46.0
 	golang.org/x/sync v0.22.0
@@ -15,6 +20,7 @@ require (
 )
 
 require (
+	filippo.io/age v1.2.1 // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
