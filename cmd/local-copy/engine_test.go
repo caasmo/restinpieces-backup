@@ -29,7 +29,11 @@ func createUsersDB(t *testing.T, path string, withData bool) {
 	}
 	// Deferred, not trailing: the t.Fatalf paths (Goexit) must not
 	// leak the handle.
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("db.Close: %v", err)
+		}
+	}()
 	_, err = db.Exec("CREATE TABLE users (name TEXT, email TEXT)")
 	if err != nil {
 		t.Fatalf("CREATE TABLE: %v", err)
