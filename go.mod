@@ -2,14 +2,10 @@ module github.com/caasmo/restinpieces-backup
 
 go 1.25.0
 
-// Temporary: consumes the renamed config.Backup shape before the
-// restinpieces release that carries it; drop when released.
-replace github.com/caasmo/restinpieces => ../restinpieces
-
 require (
 	github.com/caasmo/go-daemon-runner v0.1.0
 	github.com/caasmo/go-sqlite-rsync v0.7.0
-	github.com/caasmo/restinpieces v0.15.0
+	github.com/caasmo/restinpieces v0.16.0
 	github.com/gokrazy/rsync v0.3.4
 	github.com/landlock-lsm/go-landlock v0.9.0
 	github.com/pelletier/go-toml/v2 v2.4.3
