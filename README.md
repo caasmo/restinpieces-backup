@@ -11,7 +11,7 @@
 
 This repository holds the backup tools for a [restinpieces](https://github.com/caasmo/restinpieces) deployment.
 
-`cmd/sqlite-rsync-server` and `cmd/sqlite-rsync-client` keep a live database and a replica — a second copy of the database — in continuous sync. Over the [sqlite3_rsync](https://github.com/caasmo/go-sqlite-rsync) protocol the replica receives only the parts that changed, so it always matches the live database without copying the whole file.
+`cmd/sqlite-rsync-origin` and `cmd/sqlite-rsync-client` keep a live database and a replica — a second copy of the database — in continuous sync. Over the [sqlite3_rsync](https://github.com/caasmo/go-sqlite-rsync) protocol the replica receives only the parts that changed, so it always matches the live database without copying the whole file.
 
 A snapshot is a full copy of a database, frozen at one moment in time. The snapshot tools come in two steps: making a snapshot, then moving it to another machine.
 
@@ -23,7 +23,7 @@ If you need to restore a database to any past moment, not just the latest snapsh
 
 # Content
 
-- [sqlite3-rsync origin (`cmd/sqlite-rsync-server`)](#sqlite3-rsync-origin-cmdsqlite-rsync-server)
+- [sqlite3-rsync origin (`cmd/sqlite-rsync-origin`)](#sqlite3-rsync-origin-cmdsqlite-rsync-origin)
   - [Build](#build)
   - [Environment variables](#environment-variables)
 - [sqlite3-rsync client (`cmd/sqlite-rsync-client`)](#sqlite3-rsync-client-cmdsqlite-rsync-client)
@@ -55,14 +55,14 @@ If you need to restore a database to any past moment, not just the latest snapsh
   - [Cron](#cron)
   - [Systemd timer](#systemd-timer)
 
-## sqlite3-rsync origin (`cmd/sqlite-rsync-server`)
+## sqlite3-rsync origin (`cmd/sqlite-rsync-origin`)
 
 The origin server runs on the machine that holds the live database. It listens on one TCP address, and for every connection it sends only the parts that changed, so the client receives just the changes instead of the whole file. The server never starts a sync on its own: the client decides when. It serves a single database for now, the file given in `RIP_BCK_ORIGIN_FILE`.
 
 ### Build
 
 ```bash
-go build -o sqlite-rsync-server ./cmd/sqlite-rsync-server
+go build -o sqlite-rsync-origin ./cmd/sqlite-rsync-origin
 ```
 
 ### Environment variables
@@ -103,7 +103,7 @@ The default transport reaches the origin over SSH. The origin server runs on the
 
 ```bash
 # Terminal 1 — origin server
-RIP_BCK_ORIGIN_LISTEN_ADDR=127.0.0.1:9909 RIP_BCK_ORIGIN_FILE=/tmp/origin.db ./sqlite-rsync-server
+RIP_BCK_ORIGIN_LISTEN_ADDR=127.0.0.1:9909 RIP_BCK_ORIGIN_FILE=/tmp/origin.db ./sqlite-rsync-origin
 ```
 
 ```bash
@@ -266,7 +266,7 @@ The connection parameters and directories are hardcoded in the `Config` struct a
 
 ## Running on a schedule
 
-The one-shot commands (`cmd/rsync` and `cmd/sftp`) are one-shot runs: exit code `0` means the transfer and the integrity verification succeeded, `1` means any step failed (e.g. the glob matched nothing, a file failed verification, or the server process errored). Run them from a cron job or a systemd timer. The daemons (`cmd/rsync-daemon`, `cmd/sqlite-rsync-client`, `cmd/sqlite-rsync-server`) are always-on and need no scheduling.
+The one-shot commands (`cmd/rsync` and `cmd/sftp`) are one-shot runs: exit code `0` means the transfer and the integrity verification succeeded, `1` means any step failed (e.g. the glob matched nothing, a file failed verification, or the server process errored). Run them from a cron job or a systemd timer. The daemons (`cmd/rsync-daemon`, `cmd/sqlite-rsync-client`, `cmd/sqlite-rsync-origin`) are always-on and need no scheduling.
 
 ### Cron
 
