@@ -11,7 +11,7 @@
 
 This repository holds the backup tools for a [restinpieces](https://github.com/caasmo/restinpieces) deployment.
 
-`cmd/sqlite-rsync-origin` and `cmd/sqlite-rsync-client` keep a live database and a replica — a second copy of the database — in continuous sync. Over the [sqlite3_rsync](https://github.com/caasmo/go-sqlite-rsync) protocol the replica receives only the parts that changed, so it always matches the live database without copying the whole file.
+`cmd/sqlite-rsync/origin/server` and `cmd/sqlite-rsync/replica/client` keep a live database and a replica — a second copy of the database — in continuous sync. Over the [sqlite3_rsync](https://github.com/caasmo/go-sqlite-rsync) protocol the replica receives only the parts that changed, so it always matches the live database without copying the whole file.
 
 A snapshot is a full copy of a database, frozen at one moment in time. The snapshot tools come in two steps: making a snapshot, then moving it to another machine.
 
@@ -23,10 +23,10 @@ If you need to restore a database to any past moment, not just the latest snapsh
 
 # Content
 
-- [sqlite3-rsync origin (`cmd/sqlite-rsync-origin`)](#sqlite3-rsync-origin-cmdsqlite-rsync-origin)
+- [sqlite3-rsync origin (`cmd/sqlite-rsync/origin/server`)](#sqlite3-rsync-origin-cmdsqlite-rsyncoriginserver)
   - [Build](#build)
-  - [Environment variables](#environment-variables)
-- [sqlite3-rsync client (`cmd/sqlite-rsync-client`)](#sqlite3-rsync-client-cmdsqlite-rsync-client)
+  - [Configuration file](#configuration-file)
+- [sqlite3-rsync client (`cmd/sqlite-rsync/replica/client`)](#sqlite3-rsync-client-cmdsqlite-rsyncreplicaclient)
   - [Build](#build-1)
   - [Environment variables](#environment-variables-1)
   - [SSH mode (the default)](#ssh-mode-the-default)
@@ -55,33 +55,33 @@ If you need to restore a database to any past moment, not just the latest snapsh
   - [Cron](#cron)
   - [Systemd timer](#systemd-timer)
 
-## sqlite3-rsync origin (`cmd/sqlite-rsync-origin`)
+## sqlite3-rsync origin (`cmd/sqlite-rsync/origin/server`)
 
-The origin server runs on the machine that holds the live database. It listens on one TCP address, and for every connection it sends only the parts that changed, so the client receives just the changes instead of the whole file. The server never starts a sync on its own: the client decides when. It serves a single database for now, the file given in `RIP_BCK_ORIGIN_FILE`.
+The origin server runs on the machine that holds the live database. It listens on one TCP address, and for every connection it sends only the parts that changed, so the client receives just the changes instead of the whole file. The server never starts a sync on its own: the client decides when. It serves the databases listed in its TOML config file, one per label.
 
 ### Build
 
 ```bash
-go build -o sqlite-rsync-origin ./cmd/sqlite-rsync-origin
+go build -o sqlite-rsync-origin ./cmd/sqlite-rsync/origin/server
 ```
 
-### Environment variables
+### Configuration file
 
-| Variable | Required | Description |
-| --- | --- | --- |
-| `RIP_BCK_ORIGIN_LISTEN_ADDR` | yes | TCP address the server listens on, e.g. `127.0.0.1:9909` |
-| `RIP_BCK_ORIGIN_FILE` | yes | Path to the live database file; the database must be in WAL mode (SQLite's journal mode, which lets the app write while the sync reads) |
+It reads a TOML config file with `-config <path>`:
 
-A sync that runs longer than 15 minutes is aborted, so the origin is never blocked for long.
+```toml
+[backup.files.db]
+source_path = "/path/to/db"
+```
 
-## sqlite3-rsync client (`cmd/sqlite-rsync-client`)
+## sqlite3-rsync client (`cmd/sqlite-rsync/replica/client`)
 
 The client is an always-on daemon that copies the origin's database to a replica. On each interval it connects to the origin server and brings the replica database up to the origin's content. Two ways to connect: over SSH (the default), or directly on the same machine with `-l`/`--local`.
 
 ### Build
 
 ```bash
-go build -o sqlite-rsync-client ./cmd/sqlite-rsync-client
+go build -o sqlite-rsync-client ./cmd/sqlite-rsync/replica/client
 ```
 
 ### Environment variables
@@ -103,7 +103,7 @@ The default transport reaches the origin over SSH. The origin server runs on the
 
 ```bash
 # Terminal 1 — origin server
-RIP_BCK_ORIGIN_LISTEN_ADDR=127.0.0.1:9909 RIP_BCK_ORIGIN_FILE=/tmp/origin.db ./sqlite-rsync-origin
+./sqlite-rsync-origin -config /path/to/config.toml
 ```
 
 ```bash
@@ -266,7 +266,7 @@ The connection parameters and directories are hardcoded in the `Config` struct a
 
 ## Running on a schedule
 
-The one-shot commands (`cmd/rsync` and `cmd/sftp`) are one-shot runs: exit code `0` means the transfer and the integrity verification succeeded, `1` means any step failed (e.g. the glob matched nothing, a file failed verification, or the server process errored). Run them from a cron job or a systemd timer. The daemons (`cmd/rsync-daemon`, `cmd/sqlite-rsync-client`, `cmd/sqlite-rsync-origin`) are always-on and need no scheduling.
+The one-shot commands (`cmd/rsync` and `cmd/sftp`) are one-shot runs: exit code `0` means the transfer and the integrity verification succeeded, `1` means any step failed (e.g. the glob matched nothing, a file failed verification, or the server process errored). Run them from a cron job or a systemd timer. The daemons (`cmd/rsync-daemon`, `cmd/sqlite-rsync/replica/client`, `cmd/sqlite-rsync/origin/server`) are always-on and need no scheduling.
 
 ### Cron
 

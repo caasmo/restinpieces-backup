@@ -2,7 +2,7 @@
 
 Run the origin daemon from the repo root:
 
-    go run ./cmd/sqlite-rsync-origin -config /path/to/config.toml
+    go run ./cmd/sqlite-rsync/origin/server -config /path/to/config.toml
 
 The config file holds the [backup] section of the restinpieces
 application configuration — the same document ripc scaffolds:
