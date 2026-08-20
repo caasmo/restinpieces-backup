@@ -11,22 +11,22 @@
 
 This repository holds the backup tools for a [restinpieces](https://github.com/caasmo/restinpieces) deployment.
 
-`cmd/sqlite-rsync/origin/server` and `cmd/sqlite-rsync/replica/client` keep a live database and a replica — a second copy of the database — in continuous sync. Over the [sqlite3_rsync](https://github.com/caasmo/go-sqlite-rsync) protocol the replica receives only the parts that changed, so it always matches the live database without copying the whole file.
+`cmd/sqlite-rsync/origin/daemon` and `cmd/sqlite-rsync/replica/daemon` keep a live database and a replica — a second copy of the database — in continuous sync. Over the [sqlite3_rsync](https://github.com/caasmo/go-sqlite-rsync) protocol the replica receives only the parts that changed, so it always matches the live database without copying the whole file.
 
 A snapshot is a full copy of a database, frozen at one moment in time. The snapshot tools come in two steps: making a snapshot, then moving it to another machine.
 
 `cmd/local-copy/daemon` makes the snapshots on the machine that runs the databases: it produces a snapshot of each database at a fixed interval and keeps a hard link — a second name for the same file — to the last snapshot.
 
-`cmd/rsync/oneshot`, `cmd/rsync/daemon`, and `cmd/sftp` move snapshots to a backup machine, so a broken server does not lose its backups. They pull the `latest-*.db` links (or the compressed `.bck.gz` archives) and verify every received database with `PRAGMA integrity_check` — SQLite's built-in check that a database file is not corrupted.
+`cmd/rsync/oneshot`, `cmd/rsync/daemon`, and `cmd/sftp/oneshot` move snapshots to a backup machine, so a broken server does not lose its backups. They pull the `latest-*.db` links (or the compressed `.bck.gz` archives) and verify every received database with `PRAGMA integrity_check` — SQLite's built-in check that a database file is not corrupted.
 
 If you need to restore a database to any past moment, not just the latest snapshot, use the litestream package — see [restinpieces-litestream](https://github.com/caasmo/restinpieces-litestream).
 
 # Content
 
-- [sqlite3-rsync origin (`cmd/sqlite-rsync/origin/server`)](#sqlite3-rsync-origin-cmdsqlite-rsyncoriginserver)
+- [sqlite3-rsync origin (`cmd/sqlite-rsync/origin/daemon`)](#sqlite3-rsync-origin-cmdsqlite-rsyncorigindaemon)
   - [Build](#build)
   - [Configuration file](#configuration-file)
-- [sqlite3-rsync client (`cmd/sqlite-rsync/replica/client`)](#sqlite3-rsync-client-cmdsqlite-rsyncreplicaclient)
+- [sqlite3-rsync client (`cmd/sqlite-rsync/replica/daemon`)](#sqlite3-rsync-client-cmdsqlite-rsyncreplicadaemon)
   - [Build](#build-1)
   - [Environment variables](#environment-variables-1)
   - [SSH mode (the default)](#ssh-mode-the-default)
@@ -49,20 +49,20 @@ If you need to restore a database to any past moment, not just the latest snapsh
   - [Backup cadence](#backup-cadence-1)
   - [Signals](#signals-2)
   - [Security](#security-1)
-- [sftp command (`cmd/sftp`)](#sftp-command-cmdsftp)
+- [sftp one-shot (`cmd/sftp/oneshot`)](#sftp-one-shot-cmdsftponeshot)
   - [Build](#build-5)
 - [Running on a schedule](#running-on-a-schedule)
   - [Cron](#cron)
   - [Systemd timer](#systemd-timer)
 
-## sqlite3-rsync origin (`cmd/sqlite-rsync/origin/server`)
+## sqlite3-rsync origin (`cmd/sqlite-rsync/origin/daemon`)
 
 The origin server runs on the machine that holds the live database. It listens on one TCP address, and for every connection it sends only the parts that changed, so the client receives just the changes instead of the whole file. The server never starts a sync on its own: the client decides when. It serves the databases listed in its TOML config file, one per label.
 
 ### Build
 
 ```bash
-go build -o sqlite-rsync-origin ./cmd/sqlite-rsync/origin/server
+go build -o sqlite-rsync-origin ./cmd/sqlite-rsync/origin/daemon
 ```
 
 ### Configuration file
@@ -74,14 +74,14 @@ It reads a TOML config file with `-config <path>`:
 source_path = "/path/to/db"
 ```
 
-## sqlite3-rsync client (`cmd/sqlite-rsync/replica/client`)
+## sqlite3-rsync client (`cmd/sqlite-rsync/replica/daemon`)
 
 The client is an always-on daemon that copies the origin's database to a replica. On each interval it connects to the origin server and brings the replica database up to the origin's content. Two ways to connect: over SSH (the default), or directly on the same machine with `-l`/`--local`.
 
 ### Build
 
 ```bash
-go build -o sqlite-rsync-client ./cmd/sqlite-rsync/replica/client
+go build -o sqlite-rsync-client ./cmd/sqlite-rsync/replica/daemon
 ```
 
 ### Environment variables
@@ -252,21 +252,21 @@ SIGINT, SIGQUIT, and SIGTERM stop the daemon gracefully: the in-flight transfer 
 
 The daemon's security is documented in [cmd/rsync/daemon/README.md](cmd/rsync/daemon/README.md): the landlock sandbox and the threat it addresses, the in-memory SSH keys, and the optional systemd hardening.
 
-## sftp command (`cmd/sftp`)
+## sftp one-shot (`cmd/sftp/oneshot`)
 
 The SFTP client connects to the server with a pinned host key, opens an SFTP session, lists the remote backup directory, picks the most recent snapshot by filename (names carry a timestamp, so sorting the names finds the latest), downloads it, decompresses the `.bck.gz` archive, and verifies the resulting database with `PRAGMA integrity_check`.
 
 ### Build
 
 ```bash
-go build -o sftp-client ./cmd/sftp
+go build -o sftp-client ./cmd/sftp/oneshot
 ```
 
 The connection parameters and directories are hardcoded in the `Config` struct at the top of `main()` (`SSHUser`, `SSHHost`, `SSHPort`, `SSHPrivateKeyPath`, `SSHHostKeyPath`, `RemoteBackupDir`, `LocalBackupDir`) — edit them, rebuild, and run.
 
 ## Running on a schedule
 
-The one-shot commands (`cmd/rsync/oneshot` and `cmd/sftp`) are one-shot runs: exit code `0` means the transfer and the integrity verification succeeded, `1` means any step failed (e.g. the glob matched nothing, a file failed verification, or the server process errored). Run them from a cron job or a systemd timer. The daemons (`cmd/rsync/daemon`, `cmd/sqlite-rsync/replica/client`, `cmd/sqlite-rsync/origin/server`) are always-on and need no scheduling.
+The one-shot commands (`cmd/rsync/oneshot` and `cmd/sftp/oneshot`) are one-shot runs: exit code `0` means the transfer and the integrity verification succeeded, `1` means any step failed (e.g. the glob matched nothing, a file failed verification, or the server process errored). Run them from a cron job or a systemd timer. The daemons (`cmd/rsync/daemon`, `cmd/sqlite-rsync/replica/daemon`, `cmd/sqlite-rsync/origin/daemon`) are always-on and need no scheduling.
 
 ### Cron
 

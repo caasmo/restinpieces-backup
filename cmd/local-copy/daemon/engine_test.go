@@ -495,9 +495,9 @@ func TestEngine_Handle_EmptySource(t *testing.T) {
 	cfg := &config.Backup{}
 	cfg.Files = map[string]config.BackupFile{
 		"source": {
-			SourcePath:           sourcePath,
-			DestPath:             backupDir,
-			Frequency:            config.Duration{Duration: 24 * time.Hour},
+			SourcePath:            sourcePath,
+			DestPath:              backupDir,
+			Frequency:             config.Duration{Duration: 24 * time.Hour},
 			OnlineAPIPagesPerStep: 100,
 		},
 	}
@@ -535,9 +535,9 @@ func TestEngine_Handle_NotADatabaseFile(t *testing.T) {
 	cfg := &config.Backup{}
 	cfg.Files = map[string]config.BackupFile{
 		"source": {
-			SourcePath:           sourcePath,
-			DestPath:             backupDir,
-			Frequency:            config.Duration{Duration: 24 * time.Hour},
+			SourcePath:            sourcePath,
+			DestPath:              backupDir,
+			Frequency:             config.Duration{Duration: 24 * time.Hour},
 			OnlineAPIPagesPerStep: 100,
 		},
 	}
@@ -570,9 +570,9 @@ func TestEngine_Handle_MissingSourceFile(t *testing.T) {
 	cfg := &config.Backup{}
 	cfg.Files = map[string]config.BackupFile{
 		"source": {
-			SourcePath:           filepath.Join(tempDir, "missing.db"),
-			DestPath:             backupDir,
-			Frequency:            config.Duration{Duration: 24 * time.Hour},
+			SourcePath:            filepath.Join(tempDir, "missing.db"),
+			DestPath:              backupDir,
+			Frequency:             config.Duration{Duration: 24 * time.Hour},
 			OnlineAPIPagesPerStep: 100,
 		},
 	}

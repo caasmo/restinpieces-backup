@@ -46,7 +46,7 @@ func main() {
 
 	// Connection selection: the -l/--local flag runs rsync on the same
 	// machine; the default connects over SSH. Each branch handles its
-	// own error immediately, as cmd/sftp does.
+	// own error immediately, as cmd/sftp/oneshot does.
 	var client rsync.Client
 	if *useLocal {
 		client, err = rsync.NewLocalClient(cfg.SourceDir, cfg.DestDir)
