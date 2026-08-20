@@ -1,4 +1,4 @@
-package main
+package origin
 
 import (
 	"errors"
@@ -6,11 +6,13 @@ import (
 	"log/slog"
 	"net"
 	"runtime/debug"
+	"sync/atomic"
 	"time"
 
 	"github.com/caasmo/go-daemon-runner/daemon"
 	"github.com/caasmo/go-sqlite-rsync/sqlitersync"
 	"github.com/caasmo/restinpieces-backup/backup"
+	"github.com/caasmo/restinpieces/config"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -18,9 +20,23 @@ import (
 // and sends nothing must not hold a connection open.
 const labelTimeout = 10 * time.Second
 
-// defaultSyncTimeout is the longest a sync runs when the configuration
-// leaves Config.SyncTimeout at zero.
+// defaultSyncTimeout is the longest a sync runs when the file
+// entry's SyncTimeout is left at zero.
 const defaultSyncTimeout = 15 * time.Minute
+
+// listenAddr is the TCP address the origin daemon listens on. It is
+// hardcoded: the listen address is deployment topology, not
+// application configuration, and it never changes at runtime.
+// TODO: consider making it configurable.
+const listenAddr = "127.0.0.1:54321"
+
+// OriginConfig is the minimal view of the backup configuration the
+// origin daemon needs: the files map, keyed by a database label. The
+// restinpieces application config (config.Config) and a standalone
+// user's own struct both satisfy it.
+type OriginConfig interface {
+	BackupFiles() map[string]config.BackupFile
+}
 
 // OriginDaemon serves the configured databases over the sqlite3_rsync
 // protocol. It listens on one TCP address; every connection names the
@@ -28,27 +44,29 @@ const defaultSyncTimeout = 15 * time.Minute
 // the origin side of the protocol for that database. The daemon is
 // reactive: it knows no schedule, the client decides when to sync.
 //
-// The daemon satisfies the daemon.Daemon contract: Run creates the
-// listener and spawns the accept goroutine, Stop cancels the daemon
-// context (the goroutine closes the listener, waits for in-flight
-// syncs to finish or abort at their next message boundary, then
-// signals completion).
-type OriginDaemon struct {
+// The daemon reads its configuration from the current-config box it
+// receives in the constructor, at every decision point. The box is
+// owned by whoever assembles the daemon: the restinpieces app passes
+// its own box (app.ConfigPointer()), a standalone main publishes its
+// own config struct into a box it creates. The daemon never publishes.
+//
+// The daemon satisfies the daemon.Daemon contract (Run/Stop) and the
+// restinpieces server.Daemon contract (Start/Stop): Run/Start creates
+// the listener and spawns the accept goroutine, Stop cancels the
+// daemon context (the goroutine closes the listener, waits for
+// in-flight syncs to finish or abort at their next message boundary,
+// then signals completion).
+type OriginDaemon[T OriginConfig] struct {
 	daemon.Base
-	cfg Config
+	cfgPointer *atomic.Pointer[T]
 }
 
-// NewOriginDaemon creates the daemon around the backup configuration.
-// main loads the configuration from the environment and passes it in;
-// the daemon reads no environment itself. A nil logger falls back to
-// slog.Default().
-func NewOriginDaemon(cfg Config, logger *slog.Logger) *OriginDaemon {
-	if cfg.SyncTimeout == 0 {
-		cfg.SyncTimeout = defaultSyncTimeout
-	}
-	d := &OriginDaemon{
-		Base: daemon.NewBase("OriginDaemon", logger),
-		cfg:  cfg,
+// NewOriginDaemon creates the daemon around the current-config box.
+// A nil logger falls back to slog.Default().
+func NewOriginDaemon[T OriginConfig](pointer *atomic.Pointer[T], logger *slog.Logger) *OriginDaemon[T] {
+	d := &OriginDaemon[T]{
+		Base:       daemon.NewBase("OriginDaemon", logger),
+		cfgPointer: pointer,
 	}
 	// Every daemon log line carries the daemon's identity: reuse the
 	// daemon_name attribute the runner attaches to lifecycle logs.
@@ -56,15 +74,36 @@ func NewOriginDaemon(cfg Config, logger *slog.Logger) *OriginDaemon {
 	return d
 }
 
+// Config returns the current backup configuration, read from the
+// current-config box at every call. All config reads go through
+// Config, so a reload of the application configuration is visible at
+// the next decision point (per connection, per sync).
+func (d *OriginDaemon[T]) Config() map[string]config.BackupFile {
+	return (*d.cfgPointer.Load()).BackupFiles()
+}
+
+// Start starts the daemon under the restinpieces server.Daemon
+// contract.
+// TODO: remove once restinpieces is on go-daemon-runner; the runner calls Run directly.
+func (d *OriginDaemon[T]) Start() error {
+	return d.Run()
+}
+
 // Run creates the listener and spawns the accept goroutine. A bind
 // error is a startup failure: it is returned, and the runner rolls
 // back the already-started daemons. Stop cancels the daemon context;
 // the goroutine closes the listener to unblock Accept, waits for
 // every in-flight sync to finish or abort, then closes ShutdownDone.
-func (d *OriginDaemon) Run() error {
-	listener, err := net.Listen("tcp", d.cfg.ListenAddr)
+func (d *OriginDaemon[T]) Run() error {
+	// A daemon with no file entries refuses to boot: there is
+	// nothing to serve, and every connection would be rejected.
+	if len(d.Config()) == 0 {
+		return fmt.Errorf("no backup files configured")
+	}
+
+	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
-		return fmt.Errorf("failed to listen on %s: %w", d.cfg.ListenAddr, err)
+		return fmt.Errorf("failed to listen on %s: %w", listenAddr, err)
 	}
 
 	// The errgroup owns one goroutine per accepted connection. No
@@ -143,7 +182,7 @@ func (d *OriginDaemon) Run() error {
 // handleConn runs one connection to completion: read the label message,
 // resolve it to the origin database, then run the origin side of the
 // sync. The connection is closed on every return path.
-func (d *OriginDaemon) handleConn(conn net.Conn) (err error) {
+func (d *OriginDaemon[T]) handleConn(conn net.Conn) (err error) {
 	defer func() {
 		closeErr := conn.Close()
 		err = errors.Join(err, closeErr)
@@ -165,15 +204,19 @@ func (d *OriginDaemon) handleConn(conn net.Conn) (err error) {
 		return fmt.Errorf("%w: first message must name a database", backup.ErrInvalid)
 	}
 	label := text
-	path, ok := d.cfg.Files[label]
-	if !ok {
+	fileCfg, ok := d.Config()[label]
+	if !ok || fileCfg.SourcePath == "" {
 		return backup.Write(conn, backup.ErrorByte, "unknown database")
 	}
 	// The label arrived within the preamble deadline; the sync now runs
 	// under the sync deadline. The origin exits by one of two paths:
 	// the context, checked at every message boundary while the peer
 	// talks; or this connection deadline, when the peer stops talking.
-	err = conn.SetDeadline(time.Now().Add(d.cfg.SyncTimeout))
+	syncTimeout := fileCfg.SyncTimeout.Duration
+	if syncTimeout == 0 {
+		syncTimeout = defaultSyncTimeout
+	}
+	err = conn.SetDeadline(time.Now().Add(syncTimeout))
 	if err != nil {
 		return err
 	}
@@ -181,11 +224,11 @@ func (d *OriginDaemon) handleConn(conn net.Conn) (err error) {
 	// Stop cancels the daemon context, aborting the sync at its next
 	// message boundary.
 	log := d.Logger.With("label", label, "role", "origin")
-	log.Info("starting sync", "origin", path)
+	log.Info("starting sync", "origin", fileCfg.SourcePath)
 	start := time.Now()
-	stats, err := sqlitersync.Origin(d.Ctx, conn, path, nil)
+	stats, err := sqlitersync.Origin(d.Ctx, conn, fileCfg.SourcePath, nil)
 	if err != nil {
-		return fmt.Errorf("origin %s: %w", path, err)
+		return fmt.Errorf("origin %s: %w", fileCfg.SourcePath, err)
 	}
 	logSyncSummary(log, stats, time.Since(start))
 	return nil

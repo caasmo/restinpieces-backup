@@ -1,4 +1,4 @@
-package main
+package origin
 
 import (
 	"context"
@@ -6,11 +6,13 @@ import (
 	"io"
 	"net"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/caasmo/go-sqlite-rsync/sqlitersync"
 	"github.com/caasmo/restinpieces-backup/backup"
+	"github.com/caasmo/restinpieces/config"
 )
 
 // createWalDB creates a database file in WAL mode holding one table
@@ -39,23 +41,6 @@ func createWalDB(t *testing.T, path string) {
 	}
 }
 
-// freePort returns a free TCP address on the loopback interface. The
-// port can be taken between the probe and the daemon's bind; if that
-// happens the daemon reports the bind error and the test fails clearly.
-func freePort(t *testing.T) string {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	addr := l.Addr().String()
-	err = l.Close()
-	if err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	return addr
-}
-
 // TestOriginDaemonServe runs a full sync against the daemon over TCP:
 // the test dials the listener, sends the database label, and plays the
 // replica role. The replica database must end up holding the origin's
@@ -64,8 +49,15 @@ func TestOriginDaemonServe(t *testing.T) {
 	originPath := filepath.Join(t.TempDir(), "origin.db")
 	createWalDB(t, originPath)
 
-	addr := freePort(t)
-	d := NewOriginDaemon(Config{ListenAddr: addr, Files: map[string]string{"app_db": originPath}}, nil)
+	var pointer atomic.Pointer[config.Config]
+	pointer.Store(&config.Config{
+		Backup: config.Backup{
+			Files: map[string]config.BackupFile{
+				"app_db": {SourcePath: originPath},
+			},
+		},
+	})
+	d := NewOriginDaemon[config.Config](&pointer, nil)
 	err := d.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -74,7 +66,7 @@ func TestOriginDaemonServe(t *testing.T) {
 		_ = d.Stop(context.Background())
 	}()
 
-	conn, err := net.Dial("tcp", addr)
+	conn, err := net.Dial("tcp", listenAddr)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -116,8 +108,15 @@ func TestOriginDaemonUnknownLabel(t *testing.T) {
 	originPath := filepath.Join(t.TempDir(), "origin.db")
 	createWalDB(t, originPath)
 
-	addr := freePort(t)
-	d := NewOriginDaemon(Config{ListenAddr: addr, Files: map[string]string{"app_db": originPath}}, nil)
+	var pointer atomic.Pointer[config.Config]
+	pointer.Store(&config.Config{
+		Backup: config.Backup{
+			Files: map[string]config.BackupFile{
+				"app_db": {SourcePath: originPath},
+			},
+		},
+	})
+	d := NewOriginDaemon[config.Config](&pointer, nil)
 	err := d.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -126,7 +125,7 @@ func TestOriginDaemonUnknownLabel(t *testing.T) {
 		_ = d.Stop(context.Background())
 	}()
 
-	conn, err := net.Dial("tcp", addr)
+	conn, err := net.Dial("tcp", listenAddr)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -161,8 +160,15 @@ func TestOriginDaemonStopJoinsSync(t *testing.T) {
 	originPath := filepath.Join(t.TempDir(), "origin.db")
 	createWalDB(t, originPath)
 
-	addr := freePort(t)
-	d := NewOriginDaemon(Config{ListenAddr: addr, Files: map[string]string{"app_db": originPath}}, nil)
+	var pointer atomic.Pointer[config.Config]
+	pointer.Store(&config.Config{
+		Backup: config.Backup{
+			Files: map[string]config.BackupFile{
+				"app_db": {SourcePath: originPath},
+			},
+		},
+	})
+	d := NewOriginDaemon[config.Config](&pointer, nil)
 	err := d.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -176,7 +182,7 @@ func TestOriginDaemonStopJoinsSync(t *testing.T) {
 		_ = d.Stop(context.Background())
 	}()
 
-	conn, err := net.Dial("tcp", addr)
+	conn, err := net.Dial("tcp", listenAddr)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -224,5 +230,17 @@ func TestOriginDaemonStopJoinsSync(t *testing.T) {
 	err = <-stopDone
 	if err != nil {
 		t.Fatalf("Stop: %v", err)
+	}
+}
+
+// TestOriginDaemonNoFilesFails checks that a daemon whose config
+// holds no file entries refuses to start.
+func TestOriginDaemonNoFilesFails(t *testing.T) {
+	var pointer atomic.Pointer[config.Config]
+	pointer.Store(&config.Config{})
+	d := NewOriginDaemon[config.Config](&pointer, nil)
+	err := d.Run()
+	if err == nil {
+		t.Fatalf("Run with no files: got nil, want error")
 	}
 }
