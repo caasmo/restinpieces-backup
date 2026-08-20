@@ -15,9 +15,9 @@ This repository holds the backup tools for a [restinpieces](https://github.com/c
 
 A snapshot is a full copy of a database, frozen at one moment in time. The snapshot tools come in two steps: making a snapshot, then moving it to another machine.
 
-`cmd/local-copy` makes the snapshots on the machine that runs the databases: it produces a snapshot of each database at a fixed interval and keeps a hard link — a second name for the same file — to the last snapshot.
+`cmd/local-copy/daemon` makes the snapshots on the machine that runs the databases: it produces a snapshot of each database at a fixed interval and keeps a hard link — a second name for the same file — to the last snapshot.
 
-`cmd/rsync`, `cmd/rsync-daemon`, and `cmd/sftp` move snapshots to a backup machine, so a broken server does not lose its backups. They pull the `latest-*.db` links (or the compressed `.bck.gz` archives) and verify every received database with `PRAGMA integrity_check` — SQLite's built-in check that a database file is not corrupted.
+`cmd/rsync/oneshot`, `cmd/rsync/daemon`, and `cmd/sftp` move snapshots to a backup machine, so a broken server does not lose its backups. They pull the `latest-*.db` links (or the compressed `.bck.gz` archives) and verify every received database with `PRAGMA integrity_check` — SQLite's built-in check that a database file is not corrupted.
 
 If you need to restore a database to any past moment, not just the latest snapshot, use the litestream package — see [restinpieces-litestream](https://github.com/caasmo/restinpieces-litestream).
 
@@ -33,16 +33,16 @@ If you need to restore a database to any past moment, not just the latest snapsh
   - [Local mode for testing (`-l` / `--local`)](#local-mode-for-testing--l----local)
   - [Signals](#signals)
   - [Security](#security)
-- [local-copy daemon (`cmd/local-copy`)](#local-copy-daemon-cmdlocal-copy)
+- [local-copy daemon (`cmd/local-copy/daemon`)](#local-copy-daemon-cmdlocal-copydaemon)
   - [Build](#build-2)
   - [Configuration](#configuration)
   - [Backup cadence](#backup-cadence)
   - [Signals](#signals-1)
-- [rsync command (`cmd/rsync`)](#rsync-command-cmdrsync)
+- [rsync one-shot (`cmd/rsync/oneshot`)](#rsync-one-shot-cmdrsynconeshot)
   - [Build](#build-3)
   - [Environment variables](#environment-variables-2)
   - [Local mode for testing (`-l` / `--local`)](#local-mode-for-testing--l----local-1)
-- [rsync daemon (`cmd/rsync-daemon`)](#rsync-daemon-cmdrsync-daemon)
+- [rsync daemon (`cmd/rsync/daemon`)](#rsync-daemon-cmdrsyncdaemon)
   - [Build](#build-4)
   - [Environment variables](#environment-variables-3)
   - [Local mode for testing (`-l` / `--local`)](#local-mode-for-testing--l----local-2)
@@ -117,16 +117,16 @@ SIGINT, SIGQUIT, and SIGTERM stop the daemon gracefully: the in-flight sync is c
 
 ### Security
 
-In SSH mode the client loads the SSH keys into memory once at startup, then restricts itself before the first sync: the process may access only the replica directory (read/write) and `/etc` (read-only), so a bug or a malicious origin cannot read or write anything beyond that. The restriction uses the landlock sandbox described in [cmd/rsync-daemon/README.md](cmd/rsync-daemon/README.md). Local mode is the trusted same-machine transport and runs without the restriction.
+In SSH mode the client loads the SSH keys into memory once at startup, then restricts itself before the first sync: the process may access only the replica directory (read/write) and `/etc` (read-only), so a bug or a malicious origin cannot read or write anything beyond that. The restriction uses the landlock sandbox described in [cmd/rsync/daemon/README.md](cmd/rsync/daemon/README.md). Local mode is the trusted same-machine transport and runs without the restriction.
 
-## local-copy daemon (`cmd/local-copy`)
+## local-copy daemon (`cmd/local-copy/daemon`)
 
-`cmd/local-copy` copies the databases on a machine into local backup directories: it produces a snapshot of each database at a fixed interval and updates a hard link to the last snapshot. The rsync and sftp commands use that link as their sync target.
+`cmd/local-copy/daemon` copies the databases on a machine into local backup directories: it produces a snapshot of each database at a fixed interval and updates a hard link to the last snapshot. The rsync and sftp commands use that link as their sync target.
 
 ### Build
 
 ```bash
-go build -o local-copy ./cmd/local-copy
+go build -o local-copy ./cmd/local-copy/daemon
 ```
 
 ### Configuration
@@ -163,14 +163,14 @@ At startup every entry is validated — the paths must exist and `frequency` mus
 
 SIGINT, SIGQUIT, and SIGTERM stop the daemon gracefully: the in-flight backup is cancelled and the process exits. A copy aborted mid-way by the shutdown is not an error — the next backup covers it.
 
-## rsync command (`cmd/rsync`)
+## rsync one-shot (`cmd/rsync/oneshot`)
 
 The rsync client runs as the receiver: it starts the `rsync` binary in server (sender) mode — over SSH, or locally on the same machine with `-l` — and pulls every `latest-*.db` file (the hard links the local-copy daemon keeps) into a local destination directory. Files are written atomically (temp file + rename), and every received database must pass `PRAGMA integrity_check`.
 
 ### Build
 
 ```bash
-go build -o backup-client ./cmd/rsync
+go build -o backup-client ./cmd/rsync/oneshot
 ```
 
 The machine that runs the rsync server side (the remote host in SSH mode, the local machine in local mode) must have an rsync-compatible binary in PATH.
@@ -199,14 +199,14 @@ RIP_BCK_SOURCE_DIR=/var/backups RIP_BCK_DEST_DIR=./backups ./backup-client -l
 
 In local mode the source glob is expanded by the client itself (there is no shell in between), so zero matches fail before the transfer starts with `no backup files received: server glob matched nothing`.
 
-## rsync daemon (`cmd/rsync-daemon`)
+## rsync daemon (`cmd/rsync/daemon`)
 
-The rsync daemon performs the same transfer as the [rsync command](#rsync-command-cmdrsync) — the receiver protocol over SSH (or locally with `-l`), pulling the `latest-*.db` hard links, atomic writes, `PRAGMA integrity_check` — but on a fixed interval instead of once. It is the always-on alternative to scheduling the one-shot command.
+The rsync daemon performs the same transfer as the [rsync one-shot](#rsync-one-shot-cmdrsynconeshot) — the receiver protocol over SSH (or locally with `-l`), pulling the `latest-*.db` hard links, atomic writes, `PRAGMA integrity_check` — but on a fixed interval instead of once. It is the always-on alternative to scheduling the one-shot command.
 
 ### Build
 
 ```bash
-go build -o backup-daemon ./cmd/rsync-daemon
+go build -o backup-daemon ./cmd/rsync/daemon
 ```
 
 The machine that runs the rsync server side (the remote host in SSH mode, the local machine in local mode) must have an rsync-compatible binary in PATH.
@@ -250,7 +250,7 @@ SIGINT, SIGQUIT, and SIGTERM stop the daemon gracefully: the in-flight transfer 
 
 ### Security
 
-The daemon's security is documented in [cmd/rsync-daemon/README.md](cmd/rsync-daemon/README.md): the landlock sandbox and the threat it addresses, the in-memory SSH keys, and the optional systemd hardening.
+The daemon's security is documented in [cmd/rsync/daemon/README.md](cmd/rsync/daemon/README.md): the landlock sandbox and the threat it addresses, the in-memory SSH keys, and the optional systemd hardening.
 
 ## sftp command (`cmd/sftp`)
 
@@ -266,7 +266,7 @@ The connection parameters and directories are hardcoded in the `Config` struct a
 
 ## Running on a schedule
 
-The one-shot commands (`cmd/rsync` and `cmd/sftp`) are one-shot runs: exit code `0` means the transfer and the integrity verification succeeded, `1` means any step failed (e.g. the glob matched nothing, a file failed verification, or the server process errored). Run them from a cron job or a systemd timer. The daemons (`cmd/rsync-daemon`, `cmd/sqlite-rsync/replica/client`, `cmd/sqlite-rsync/origin/server`) are always-on and need no scheduling.
+The one-shot commands (`cmd/rsync/oneshot` and `cmd/sftp`) are one-shot runs: exit code `0` means the transfer and the integrity verification succeeded, `1` means any step failed (e.g. the glob matched nothing, a file failed verification, or the server process errored). Run them from a cron job or a systemd timer. The daemons (`cmd/rsync/daemon`, `cmd/sqlite-rsync/replica/client`, `cmd/sqlite-rsync/origin/server`) are always-on and need no scheduling.
 
 ### Cron
 

@@ -1,6 +1,7 @@
 // Package config loads the backup client configuration from the
 // environment. It is the single source of truth for the RIP_BCK_*
-// environment contract shared by cmd/rsync and cmd/rsync-daemon.
+// environment contract shared by cmd/rsync/oneshot and
+// cmd/rsync/daemon.
 package config
 
 import (
@@ -114,7 +115,7 @@ func (c Config) ValidateSSH() error {
 // ValidateRsyncDaemon reports whether the daemon-specific settings are
 // usable: the daemon requires the interval. config.New rejects a set
 // non-positive interval, and this method rejects a missing one, so
-// time.NewTicker never sees a zero interval. cmd/rsync-daemon calls it
+// time.NewTicker never sees a zero interval. cmd/rsync/daemon calls it
 // right after New; the other commands never do.
 func (c Config) ValidateRsyncDaemon() error {
 	if c.RsyncDaemon.Interval == 0 {

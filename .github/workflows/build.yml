@@ -41,9 +41,9 @@ jobs:
           [ "$GOOS" = "windows" ] && EXTENSION=".exe"
           [ -n "${{ matrix.GOARM }}" ] && export GOARM="${{ matrix.GOARM }}"
 
-          CGO_ENABLED=0 go build -o "$DIR/${{ env.RSYNC_BIN }}$EXTENSION" -trimpath ./cmd/rsync
+          CGO_ENABLED=0 go build -o "$DIR/${{ env.RSYNC_BIN }}$EXTENSION" -trimpath ./cmd/rsync/oneshot
           CGO_ENABLED=0 go build -o "$DIR/${{ env.SFTP_BIN }}$EXTENSION" -trimpath ./cmd/sftp
-          CGO_ENABLED=0 go build -o "$DIR/${{ env.DAEMON_BIN }}$EXTENSION" -trimpath ./cmd/rsync-daemon
+          CGO_ENABLED=0 go build -o "$DIR/${{ env.DAEMON_BIN }}$EXTENSION" -trimpath ./cmd/rsync/daemon
 
           for BIN in ${{ env.RSYNC_BIN }} ${{ env.SFTP_BIN }} ${{ env.DAEMON_BIN }}; do
             if [ "$GOOS" = "windows" ]; then

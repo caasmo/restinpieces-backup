@@ -1,6 +1,6 @@
-# rsync backup daemon (`cmd/rsync-daemon`)
+# rsync backup daemon (`cmd/rsync/daemon`)
 
-The rsync backup daemon performs the same transfer as the one-shot [`cmd/rsync`](../rsync) command — pulling the `latest-*.db` hard links and verifying every received database with `PRAGMA integrity_check` — but on a fixed interval instead of once. The first backup runs immediately at startup, then one per tick. See the repository [README](../../README.md) for usage.
+The rsync backup daemon performs the same transfer as the one-shot [`cmd/rsync/oneshot`](../oneshot) command — pulling the `latest-*.db` hard links and verifying every received database with `PRAGMA integrity_check` — but on a fixed interval instead of once. The first backup runs immediately at startup, then one per tick. See the repository [README](../../../README.md) for usage.
 
 This document records the daemon's transfer engine and, in particular, its security architecture.
 
@@ -44,7 +44,7 @@ The rsync wire protocol carries a **file list** sent by the peer: file names, pa
 
 The transfer runs through gokrazy's `rsyncclient`, a Go rsync implementation that runs **in-process**, inside the daemon process. The API is explicitly built for reuse: `New`'s doc comment says *"you can call `Client.Run` one or more times with the same `Client`"*. The daemon relies on that contract: `receiver` (in `rsync/rsync.go`) caches a single `*rsyncclient.Client` and runs every daemon tick through it.
 
-That reused client is what applies the sandbox: every `Run` calls `restrict.MaybeFileSystem`, a function from gokrazy's `internal/restrict` package (in the `github.com/gokrazy/rsync` module), which installs a landlock ruleset around the process. Because the client is reused, the ruleset is re-installed on every tick — and landlock rulesets stack: the kernel caps them at 16 per process (`LANDLOCK_MAX_NUM_LAYERS`), so the 17th transfer would fail with E2BIG. The one-shot `cmd/rsync` never hits this either: it installs the cage once at startup, before its single `Run`.
+That reused client is what applies the sandbox: every `Run` calls `restrict.MaybeFileSystem`, a function from gokrazy's `internal/restrict` package (in the `github.com/gokrazy/rsync` module), which installs a landlock ruleset around the process. Because the client is reused, the ruleset is re-installed on every tick — and landlock rulesets stack: the kernel caps them at 16 per process (`LANDLOCK_MAX_NUM_LAYERS`), so the 17th transfer would fail with E2BIG. The one-shot `cmd/rsync/oneshot` never hits this either: it installs the cage once at startup, before its single `Run`.
 
 The allowlist gokrazy applies is:
 
