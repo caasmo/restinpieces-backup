@@ -85,6 +85,8 @@ func main() {
 	// config store, so the current-config box is already populated.
 	// The origin daemon holds that box (coreApp.ConfigPointer()) and
 	// reads the backup files at every decision point.
+	// The origin daemon serves only entries with strategy "sqlite-rsync";
+	// online/vacuum entries in the same backup.files map are ignored.
 	originDaemon := origin.NewOriginDaemon[config.Config](coreApp.ConfigPointer(), nil)
 
 	// The daemon satisfies the restinpieces server.Daemon contract:

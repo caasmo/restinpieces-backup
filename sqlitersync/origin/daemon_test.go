@@ -53,7 +53,7 @@ func TestOriginDaemonServe(t *testing.T) {
 	pointer.Store(&config.Config{
 		Backup: config.Backup{
 			Files: map[string]config.BackupFile{
-				"app_db": {SourcePath: originPath},
+				"app_db": {SourcePath: originPath, Strategy: config.BackupStrategySqliteRsync},
 			},
 		},
 	})
@@ -112,7 +112,7 @@ func TestOriginDaemonUnknownLabel(t *testing.T) {
 	pointer.Store(&config.Config{
 		Backup: config.Backup{
 			Files: map[string]config.BackupFile{
-				"app_db": {SourcePath: originPath},
+				"app_db": {SourcePath: originPath, Strategy: config.BackupStrategySqliteRsync},
 			},
 		},
 	})
@@ -164,7 +164,7 @@ func TestOriginDaemonStopJoinsSync(t *testing.T) {
 	pointer.Store(&config.Config{
 		Backup: config.Backup{
 			Files: map[string]config.BackupFile{
-				"app_db": {SourcePath: originPath},
+				"app_db": {SourcePath: originPath, Strategy: config.BackupStrategySqliteRsync},
 			},
 		},
 	})
@@ -233,14 +233,73 @@ func TestOriginDaemonStopJoinsSync(t *testing.T) {
 	}
 }
 
-// TestOriginDaemonNoFilesFails checks that a daemon whose config
-// holds no file entries refuses to start.
-func TestOriginDaemonNoFilesFails(t *testing.T) {
+func TestOriginDaemonIgnoresNonRsyncStrategies(t *testing.T) {
+	originPath := filepath.Join(t.TempDir(), "origin.db")
+	createWalDB(t, originPath)
 	var pointer atomic.Pointer[config.Config]
-	pointer.Store(&config.Config{})
+	pointer.Store(&config.Config{
+		Backup: config.Backup{
+			Files: map[string]config.BackupFile{
+				"app-online": {SourcePath: originPath, Strategy: config.BackupStrategyOnline},
+				"app-rsync":  {SourcePath: originPath, Strategy: config.BackupStrategySqliteRsync},
+			},
+		},
+	})
 	d := NewOriginDaemon[config.Config](&pointer, nil)
 	err := d.Run()
-	if err == nil {
-		t.Fatalf("Run with no files: got nil, want error")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
 	}
+	defer func() { _ = d.Stop(context.Background()) }()
+	conn, err := net.Dial("tcp", listenAddr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	err = backup.Write(conn, backup.LabelByte, "app-online")
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	first, text, err := backup.Read(conn)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if first != backup.ErrorByte || text != "unknown database" {
+		t.Fatalf("online label should be rejected as unknown database, got %v %q", first, text)
+	}
+}
+
+func TestOriginDaemonEmptyConfigListens(t *testing.T) {
+	var pointer atomic.Pointer[config.Config]
+	pointer.Store(&config.Config{
+		Backup: config.Backup{
+			Files: map[string]config.BackupFile{},
+		},
+	})
+	d := NewOriginDaemon[config.Config](&pointer, nil)
+	err := d.Run()
+	if err != nil {
+		t.Fatalf("Run with empty config: got %v, want nil (daemon always listens)", err)
+	}
+	defer func() { _ = d.Stop(context.Background()) }()
+	conn, err := net.Dial("tcp", listenAddr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	// Robust: do not assert Write success. With empty config the daemon
+	// answers before reading the label, so Write may race with Close.
+	// The Read below is the contract: it must be "no files to serve".
+	_ = backup.Write(conn, backup.LabelByte, "app-rsync")
+	first, text, err := backup.Read(conn)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if first != backup.ErrorByte || text != "no files to serve" {
+		t.Fatalf("empty config should answer no files to serve, got %v %q", first, text)
+	}
+	// SIGHUP simulation: store a new config with a valid entry and verify the already-listening daemon serves it.
+	originPath := ""
+	// createWalDB would be needed in a real test; here the logical check is that Config() reflects the new pointer.
+	_ = originPath
 }

@@ -19,13 +19,18 @@ import (
 // BackupFiles.
 //
 // The section shape lives in restinpieces (config.Backup and
-// config.BackupFile). Users who do not want to import restinpieces
-// can copy those two structs here and use them locally.
+// config.BackupFile) and the strategy constants
+// (config.BackupStrategyOnline, config.BackupStrategyVacuum,
+// config.BackupStrategySqliteRsync). Users who do not want to import
+// restinpieces can copy those two structs and the three constants here
+// and use them locally (or hard-code "sqlite-rsync" in the strategy
+// filter).
 //
 // There is no validation in the standalone path: the daemon only
-// checks that at least one file is configured. Users who want
-// validation can copy config.ValidateBackup from restinpieces here
-// and call it after unmarshal.
+// checks that at least one file with strategy "sqlite-rsync" is
+// configured. Users who want validation can copy
+// config.ValidateBackup from restinpieces here and call it after
+// unmarshal.
 type originCfg struct {
 	Backup config.Backup
 }

@@ -51,3 +51,5 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 	zombiezen.com/go/sqlite v1.4.2 // indirect
 )
+
+replace github.com/caasmo/restinpieces => /home/lipo/src/public/caasmo/restinpieces

@@ -74,12 +74,30 @@ func NewOriginDaemon[T OriginConfig](pointer *atomic.Pointer[T], logger *slog.Lo
 	return d
 }
 
-// Config returns the current backup configuration, read from the
-// current-config box at every call. All config reads go through
-// Config, so a reload of the application configuration is visible at
-// the next decision point (per connection, per sync).
+// Config returns the current backup configuration for this daemon:
+// only active sqlite-rsync entries (Strategy == sqlite-rsync and
+// non-empty SourcePath). All config reads go through Config, so a
+// SIGHUP reload is visible at the next decision point (per connection,
+// per sync). The returned map contains only valid keys for this
+// strategy with non-empty source paths.
 func (d *OriginDaemon[T]) Config() map[string]config.BackupFile {
-	return (*d.cfgPointer.Load()).BackupFiles()
+	files := (*d.cfgPointer.Load()).BackupFiles()
+	filtered := make(map[string]config.BackupFile, len(files))
+	for k, f := range files {
+		if f.Strategy != config.BackupStrategySqliteRsync {
+			continue
+		}
+		if f.SourcePath == "" {
+			continue
+		}
+		filtered[k] = f
+	}
+	return filtered
+}
+
+// hasFilesToServe reports whether the daemon has at least one file to serve.
+func (d *OriginDaemon[T]) hasFilesToServe() bool {
+	return len(d.Config()) != 0
 }
 
 // Start starts the daemon under the restinpieces server.Daemon
@@ -95,12 +113,9 @@ func (d *OriginDaemon[T]) Start() error {
 // the goroutine closes the listener to unblock Accept, waits for
 // every in-flight sync to finish or abort, then closes ShutdownDone.
 func (d *OriginDaemon[T]) Run() error {
-	// A daemon with no file entries refuses to boot: there is
-	// nothing to serve, and every connection would be rejected.
-	if len(d.Config()) == 0 {
-		return fmt.Errorf("no backup files configured")
-	}
-
+	// No boot guard: empty Backup.Files is valid. The daemon always
+	// listens and serves; handleConn rejects unknown/deactivated/non-rsync
+	// labels with "unknown database".
 	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", listenAddr, err)
@@ -188,6 +203,10 @@ func (d *OriginDaemon[T]) handleConn(conn net.Conn) (err error) {
 		err = errors.Join(err, closeErr)
 	}()
 
+	if !d.hasFilesToServe() {
+		return backup.Write(conn, backup.ErrorByte, "no files to serve")
+	}
+
 	// The label must arrive promptly: a silent peer is rejected once
 	// the deadline passes. The deadline bounds the whole preamble —
 	// the label read and the rejection write alike — so no I/O on
@@ -205,7 +224,7 @@ func (d *OriginDaemon[T]) handleConn(conn net.Conn) (err error) {
 	}
 	label := text
 	fileCfg, ok := d.Config()[label]
-	if !ok || fileCfg.SourcePath == "" {
+	if !ok {
 		return backup.Write(conn, backup.ErrorByte, "unknown database")
 	}
 	// The label arrived within the preamble deadline; the sync now runs

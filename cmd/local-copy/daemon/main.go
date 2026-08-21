@@ -61,11 +61,11 @@ func readConfig(path string) (*config.Backup, error) {
 	}
 
 	// Hand-written minimal entries (source/dest/frequency only) get the
-	// NewBackupFileDefaults tuning values: strategy defaults to online
+	// NewBackupOnlineDefaults tuning values: strategy defaults to online
 	// at runtime, which demands pages_per_step >= 1 (Step(0) would copy
 	// nothing and never finish) and tolerates a zero sleep interval (no
 	// throttling).
-	def := config.NewBackupFileDefaults()
+	def := config.NewBackupOnlineDefaults()
 	for key, f := range cfg.Files {
 		if f.OnlineAPIPagesPerStep == 0 {
 			f.OnlineAPIPagesPerStep = def.OnlineAPIPagesPerStep
