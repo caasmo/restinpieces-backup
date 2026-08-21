@@ -11,7 +11,7 @@ import (
 
 	"github.com/caasmo/go-daemon-runner/daemon"
 	"github.com/caasmo/go-sqlite-rsync/sqlitersync"
-	"github.com/caasmo/restinpieces-backup/backup"
+	sr "github.com/caasmo/restinpieces-backup/sqlitersync"
 	"github.com/caasmo/restinpieces/config"
 	"golang.org/x/sync/errgroup"
 )
@@ -204,7 +204,7 @@ func (d *OriginDaemon[T]) handleConn(conn net.Conn) (err error) {
 	}()
 
 	if !d.hasFilesToServe() {
-		return backup.Write(conn, backup.ErrorByte, "no files to serve")
+		return sr.Write(conn, sr.ErrorByte, "no files to serve")
 	}
 
 	// The label must arrive promptly: a silent peer is rejected once
@@ -215,17 +215,17 @@ func (d *OriginDaemon[T]) handleConn(conn net.Conn) (err error) {
 	if err != nil {
 		return err
 	}
-	first, text, err := backup.Read(conn)
+	first, text, err := sr.Read(conn)
 	if err != nil {
 		return err
 	}
-	if first != backup.LabelByte {
-		return fmt.Errorf("%w: first message must name a database", backup.ErrInvalid)
+	if first != sr.LabelByte {
+		return fmt.Errorf("%w: first message must name a database", sr.ErrInvalid)
 	}
 	label := text
 	fileCfg, ok := d.Config()[label]
 	if !ok {
-		return backup.Write(conn, backup.ErrorByte, "unknown database")
+		return sr.Write(conn, sr.ErrorByte, "unknown database")
 	}
 	// The label arrived within the preamble deadline; the sync now runs
 	// under the sync deadline. The origin exits by one of two paths:

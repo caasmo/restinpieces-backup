@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/caasmo/go-sqlite-rsync/sqlitersync"
-	"github.com/caasmo/restinpieces-backup/backup"
+	sr "github.com/caasmo/restinpieces-backup/sqlitersync"
 	"github.com/caasmo/restinpieces/config"
 )
 
@@ -74,7 +74,7 @@ func TestOriginDaemonServe(t *testing.T) {
 		_ = conn.Close()
 	}()
 
-	err = backup.Write(conn, backup.LabelByte, "app_db")
+	err = sr.Write(conn, sr.LabelByte, "app_db")
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -133,16 +133,16 @@ func TestOriginDaemonUnknownLabel(t *testing.T) {
 		_ = conn.Close()
 	}()
 
-	err = backup.Write(conn, backup.LabelByte, "nope")
+	err = sr.Write(conn, sr.LabelByte, "nope")
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
-	first, text, err := backup.Read(conn)
+	first, text, err := sr.Read(conn)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if first != backup.ErrorByte {
+	if first != sr.ErrorByte {
 		t.Fatalf("first byte = 0x%02x, want error message", first)
 	}
 	if text != "unknown database" {
@@ -190,7 +190,7 @@ func TestOriginDaemonStopJoinsSync(t *testing.T) {
 		_ = conn.Close()
 	}()
 
-	err = backup.Write(conn, backup.LabelByte, "app_db")
+	err = sr.Write(conn, sr.LabelByte, "app_db")
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -256,15 +256,15 @@ func TestOriginDaemonIgnoresNonRsyncStrategies(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 	defer func() { _ = conn.Close() }()
-	err = backup.Write(conn, backup.LabelByte, "app-online")
+	err = sr.Write(conn, sr.LabelByte, "app-online")
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	first, text, err := backup.Read(conn)
+	first, text, err := sr.Read(conn)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if first != backup.ErrorByte || text != "unknown database" {
+	if first != sr.ErrorByte || text != "unknown database" {
 		t.Fatalf("online label should be rejected as unknown database, got %v %q", first, text)
 	}
 }
@@ -290,12 +290,12 @@ func TestOriginDaemonEmptyConfigListens(t *testing.T) {
 	// Robust: do not assert Write success. With empty config the daemon
 	// answers before reading the label, so Write may race with Close.
 	// The Read below is the contract: it must be "no files to serve".
-	_ = backup.Write(conn, backup.LabelByte, "app-rsync")
-	first, text, err := backup.Read(conn)
+	_ = sr.Write(conn, sr.LabelByte, "app-rsync")
+	first, text, err := sr.Read(conn)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if first != backup.ErrorByte || text != "no files to serve" {
+	if first != sr.ErrorByte || text != "no files to serve" {
 		t.Fatalf("empty config should answer no files to serve, got %v %q", first, text)
 	}
 	// SIGHUP simulation: store a new config with a valid entry and verify the already-listening daemon serves it.

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/caasmo/go-sqlite-rsync/sqlitersync"
-	"github.com/caasmo/restinpieces-backup/backup"
+	sr "github.com/caasmo/restinpieces-backup/sqlitersync"
 )
 
 // createWalDB creates a database file in WAL mode holding one table
@@ -62,16 +62,16 @@ func startOrigin(t *testing.T, files map[string]string) string {
 			_ = conn.Close()
 		}()
 		_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
-		first, text, err := backup.Read(conn)
+		first, text, err := sr.Read(conn)
 		if err != nil {
 			return
 		}
-		if first != backup.LabelByte {
+		if first != sr.LabelByte {
 			return
 		}
 		path, ok := files[text]
 		if !ok {
-			_ = backup.Write(conn, backup.ErrorByte, "unknown database")
+			_ = sr.Write(conn, sr.ErrorByte, "unknown database")
 			return
 		}
 		_, _ = sqlitersync.Origin(context.Background(), conn, path, nil)

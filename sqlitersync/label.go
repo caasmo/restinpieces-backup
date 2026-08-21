@@ -1,4 +1,4 @@
-// Package backup sends the name of the database to back up from the
+// Package sqlitersync sends the label of the database to back up from the
 // client to the server.
 //
 // The sync library used in this project (package sqlitersync) knows how
@@ -30,7 +30,7 @@
 // rejected with the protocol's own ORIGIN_ERROR byte (0x43) before
 // ORIGIN_BEGIN; the client treats any first byte other than 0x41 as a
 // rejection.
-package backup
+package sqlitersync
 
 import (
 	"encoding/binary"
@@ -52,7 +52,7 @@ const MaxLen = 64
 
 // ErrInvalid is returned for messages that are not well-formed: a text
 // that is too long.
-var ErrInvalid = errors.New("backup: invalid message")
+var ErrInvalid = errors.New("sqlitersync: invalid message")
 
 // Write writes one message: the first byte, the message length as four
 // big-endian bytes, then the message text.

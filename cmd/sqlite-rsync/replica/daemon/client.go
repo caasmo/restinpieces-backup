@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/caasmo/go-sqlite-rsync/sqlitersync"
-	"github.com/caasmo/restinpieces-backup/backup"
+	sr "github.com/caasmo/restinpieces-backup/sqlitersync"
 )
 
 // dialTimeout bounds the local transport's dial: an unreachable peer
@@ -52,7 +52,7 @@ func runSync(ctx context.Context, conn net.Conn, label, replicaPath string) (sql
 	// Send the preamble first: the label byte (0x01) plus the database
 	// name. This is the message the origin server reads before it
 	// accepts the sync; a label the server does not know is rejected.
-	err := backup.Write(conn, backup.LabelByte, label)
+	err := sr.Write(conn, sr.LabelByte, label)
 	if err != nil {
 		return sqlitersync.Stats{}, fmt.Errorf("send label: %w", err)
 	}
