@@ -6,15 +6,10 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/caasmo/restinpieces/config"
 )
 
 // TestReadConfig pins the parse-and-validate contract of readConfig:
-// valid TOML round-trips, minimal entries get the tuning defaults,
-// explicit zero tuning values get the same defaults (zero is
-// indistinguishable from absent), and every failure mode returns an
-// error.
+// valid TOML round-trips and every failure mode returns an error.
 func TestReadConfig(t *testing.T) {
 	// Real paths for the valid cases: ValidateBackup requires
 	// source_path to be an existing file and dest_path an existing
@@ -35,22 +30,21 @@ func TestReadConfig(t *testing.T) {
 		return path
 	}
 
-	t.Run("valid full entry", func(t *testing.T) {
+	t.Run("valid full entry online", func(t *testing.T) {
 		path := writeConfig(t, `
-[files.app_db]
+[online.app_db]
 source_path = "`+srcPath+`"
 dest_path = "`+destDir+`"
 frequency = "24h"
 compression = true
-strategy = "vacuum"
-online_api_pages_per_step = 50
-online_api_sleep_interval = "5ms"
+pages_per_step = 50
+sleep_interval = "5ms"
 `)
 		cfg, err := readConfig(path)
 		if err != nil {
 			t.Fatalf("readConfig: %v", err)
 		}
-		f := cfg.Files["app_db"]
+		f := cfg.Online["app_db"]
 		if f.SourcePath != srcPath {
 			t.Errorf("SourcePath: got %q, want %q", f.SourcePath, srcPath)
 		}
@@ -63,56 +57,38 @@ online_api_sleep_interval = "5ms"
 		if !f.Compression {
 			t.Error("Compression: got false, want true")
 		}
-		if f.Strategy != config.BackupStrategyVacuum {
-			t.Errorf("Strategy: got %q, want %q", f.Strategy, config.BackupStrategyVacuum)
+		if f.PagesPerStep != 50 {
+			t.Errorf("PagesPerStep: got %d, want 50", f.PagesPerStep)
 		}
-		if f.OnlineAPIPagesPerStep != 50 {
-			t.Errorf("OnlineAPIPagesPerStep: got %d, want 50", f.OnlineAPIPagesPerStep)
-		}
-		if f.OnlineAPISleepInterval.Duration != 5*time.Millisecond {
-			t.Errorf("OnlineAPISleepInterval: got %v, want 5ms", f.OnlineAPISleepInterval.Duration)
+		if f.SleepInterval.Duration != 5*time.Millisecond {
+			t.Errorf("SleepInterval: got %v, want 5ms", f.SleepInterval.Duration)
 		}
 	})
 
-	t.Run("minimal entry fills tuning defaults", func(t *testing.T) {
+	t.Run("valid full entry vacuum", func(t *testing.T) {
 		path := writeConfig(t, `
-[files.app_db]
+[vacuum.app_db]
 source_path = "`+srcPath+`"
 dest_path = "`+destDir+`"
 frequency = "24h"
+compression = true
 `)
 		cfg, err := readConfig(path)
 		if err != nil {
 			t.Fatalf("readConfig: %v", err)
 		}
-		f := cfg.Files["app_db"]
-		if f.OnlineAPIPagesPerStep != 100 {
-			t.Errorf("OnlineAPIPagesPerStep: got %d, want 100", f.OnlineAPIPagesPerStep)
+		f := cfg.Vacuum["app_db"]
+		if f.SourcePath != srcPath {
+			t.Errorf("SourcePath: got %q, want %q", f.SourcePath, srcPath)
 		}
-		if f.OnlineAPISleepInterval.Duration != 10*time.Millisecond {
-			t.Errorf("OnlineAPISleepInterval: got %v, want 10ms", f.OnlineAPISleepInterval.Duration)
+		if f.DestPath != destDir {
+			t.Errorf("DestPath: got %q, want %q", f.DestPath, destDir)
 		}
-	})
-
-	t.Run("explicit zero tuning values get defaults", func(t *testing.T) {
-		path := writeConfig(t, `
-[files.app_db]
-source_path = "`+srcPath+`"
-dest_path = "`+destDir+`"
-frequency = "24h"
-online_api_pages_per_step = 0
-online_api_sleep_interval = "0s"
-`)
-		cfg, err := readConfig(path)
-		if err != nil {
-			t.Fatalf("readConfig: %v", err)
+		if f.Frequency.Duration != 24*time.Hour {
+			t.Errorf("Frequency: got %v, want 24h", f.Frequency.Duration)
 		}
-		f := cfg.Files["app_db"]
-		if f.OnlineAPIPagesPerStep != 100 {
-			t.Errorf("OnlineAPIPagesPerStep: got %d, want 100", f.OnlineAPIPagesPerStep)
-		}
-		if f.OnlineAPISleepInterval.Duration != 10*time.Millisecond {
-			t.Errorf("OnlineAPISleepInterval: got %v, want 10ms", f.OnlineAPISleepInterval.Duration)
+		if !f.Compression {
+			t.Error("Compression: got false, want true")
 		}
 	})
 
@@ -125,8 +101,8 @@ x = 1
 		if err != nil {
 			t.Fatalf("readConfig: %v", err)
 		}
-		if len(cfg.Files) != 0 {
-			t.Errorf("Files: got %d entries, want 0", len(cfg.Files))
+		if len(cfg.Online)+len(cfg.Vacuum) != 0 {
+			t.Errorf("Online+Vacuum: got %d entries, want 0", len(cfg.Online)+len(cfg.Vacuum))
 		}
 	})
 
@@ -138,7 +114,7 @@ x = 1
 	})
 
 	t.Run("invalid TOML", func(t *testing.T) {
-		path := writeConfig(t, "[files")
+		path := writeConfig(t, "[online")
 		_, err := readConfig(path)
 		if err == nil {
 			t.Fatal("readConfig: expected error for invalid TOML, got nil")
@@ -150,7 +126,7 @@ x = 1
 
 	t.Run("validation failure", func(t *testing.T) {
 		path := writeConfig(t, `
-[files.app_db]
+[online.app_db]
 source_path = "`+srcPath+`"
 dest_path = "`+destDir+`"
 frequency = "0s"

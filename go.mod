@@ -15,6 +15,8 @@ require (
 	modernc.org/sqlite v1.56.0
 )
 
+replace github.com/caasmo/restinpieces => ../restinpieces
+
 require (
 	filippo.io/age v1.2.1 // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect

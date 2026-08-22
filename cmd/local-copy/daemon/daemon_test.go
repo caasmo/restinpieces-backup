@@ -23,43 +23,47 @@ func TestInterval(t *testing.T) {
 	backupDir := filepath.Join(t.TempDir(), "backups")
 
 	t.Run("single active entry", func(t *testing.T) {
-		cfg := &config.Backup{Files: map[string]config.BackupFile{
+		cfg := &config.Backup{Online: config.BackupOnline{
 			"a": {SourcePath: sourcePath, DestPath: backupDir, Frequency: config.Duration{Duration: time.Hour}},
 		}}
-		d := NewLocalCopyDaemon(cfg, nil)
+		d := New(cfg, nil)
 		if got := d.interval(); got != time.Hour {
 			t.Fatalf("interval() = %v, want %v", got, time.Hour)
 		}
 	})
 
 	t.Run("two entries, smaller frequency wins", func(t *testing.T) {
-		cfg := &config.Backup{Files: map[string]config.BackupFile{
+		cfg := &config.Backup{Online: config.BackupOnline{
 			"a": {SourcePath: sourcePath, DestPath: backupDir, Frequency: config.Duration{Duration: time.Hour}},
 			"b": {SourcePath: sourcePath, DestPath: backupDir, Frequency: config.Duration{Duration: 30 * time.Minute}},
 		}}
-		d := NewLocalCopyDaemon(cfg, nil)
+		d := New(cfg, nil)
 		if got := d.interval(); got != 30*time.Minute {
 			t.Fatalf("interval() = %v, want %v", got, 30*time.Minute)
 		}
 	})
 
 	t.Run("empty paths skipped", func(t *testing.T) {
-		cfg := &config.Backup{Files: map[string]config.BackupFile{
-			"a": {SourcePath: "", DestPath: backupDir, Frequency: config.Duration{Duration: time.Hour}},
-			"b": {SourcePath: sourcePath, DestPath: "", Frequency: config.Duration{Duration: 30 * time.Minute}},
-			"c": {SourcePath: sourcePath, DestPath: backupDir, Frequency: config.Duration{Duration: time.Minute}},
-		}}
-		d := NewLocalCopyDaemon(cfg, nil)
+		cfg := &config.Backup{
+			Online: config.BackupOnline{
+				"a": {SourcePath: "", DestPath: backupDir, Frequency: config.Duration{Duration: time.Hour}},
+			},
+			Vacuum: config.BackupVacuum{
+				"b": {SourcePath: sourcePath, DestPath: "", Frequency: config.Duration{Duration: 30 * time.Minute}},
+				"c": {SourcePath: sourcePath, DestPath: backupDir, Frequency: config.Duration{Duration: time.Minute}},
+			},
+		}
+		d := New(cfg, nil)
 		if got := d.interval(); got != time.Minute {
 			t.Fatalf("interval() = %v, want %v", got, time.Minute)
 		}
 	})
 
 	t.Run("no active entries", func(t *testing.T) {
-		cfg := &config.Backup{Files: map[string]config.BackupFile{
+		cfg := &config.Backup{Online: config.BackupOnline{
 			"a": {SourcePath: "", DestPath: "", Frequency: config.Duration{Duration: time.Hour}},
 		}}
-		d := NewLocalCopyDaemon(cfg, nil)
+		d := New(cfg, nil)
 		if got := d.interval(); got != 0 {
 			t.Fatalf("interval() = %v, want 0", got)
 		}
@@ -78,16 +82,16 @@ func TestLocalCopyDaemonRunStop(t *testing.T) {
 		t.Fatalf("Mkdir: %v", err)
 	}
 
-	cfg := &config.Backup{Files: map[string]config.BackupFile{
+	cfg := &config.Backup{Online: config.BackupOnline{
 		"app_db": {
-			SourcePath:            sourcePath,
-			DestPath:              backupDir,
-			Frequency:             config.Duration{Duration: time.Hour},
-			Strategy:              config.BackupStrategyOnline,
-			OnlineAPIPagesPerStep: 100,
+			SourcePath:   sourcePath,
+			DestPath:     backupDir,
+			Frequency:    config.Duration{Duration: time.Hour},
+			PagesPerStep: 100,
+			SleepInterval: config.Duration{Duration: 10 * time.Millisecond},
 		},
 	}}
-	d := NewLocalCopyDaemon(cfg, nil)
+	d := New(cfg, nil)
 	err := d.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -118,7 +122,7 @@ func TestLocalCopyDaemonRunStop(t *testing.T) {
 // TestLocalCopyDaemonRunStopNoEntries runs the daemon over an empty
 // Files map: it runs, copies nothing, and stops gracefully.
 func TestLocalCopyDaemonRunStopNoEntries(t *testing.T) {
-	d := NewLocalCopyDaemon(&config.Backup{}, nil)
+	d := New(&config.Backup{}, nil)
 	err := d.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -162,17 +166,16 @@ func TestLocalCopyDaemonRunStopAbortsInFlightCopy(t *testing.T) {
 		t.Fatalf("Mkdir: %v", err)
 	}
 
-	cfg := &config.Backup{Files: map[string]config.BackupFile{
+	cfg := &config.Backup{Online: config.BackupOnline{
 		"app_db": {
-			SourcePath:             sourcePath,
-			DestPath:               backupDir,
-			Frequency:              config.Duration{Duration: time.Hour},
-			Strategy:               config.BackupStrategyOnline,
-			OnlineAPIPagesPerStep:  1,
-			OnlineAPISleepInterval: config.Duration{Duration: 30 * time.Second},
+			SourcePath:   sourcePath,
+			DestPath:     backupDir,
+			Frequency:    config.Duration{Duration: time.Hour},
+			PagesPerStep: 1,
+			SleepInterval: config.Duration{Duration: 30 * time.Second},
 		},
 	}}
-	d := NewLocalCopyDaemon(cfg, nil)
+	d := New(cfg, nil)
 	err = d.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)

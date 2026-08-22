@@ -52,12 +52,14 @@ func TestOriginDaemonServe(t *testing.T) {
 	var pointer atomic.Pointer[config.Config]
 	pointer.Store(&config.Config{
 		Backup: config.Backup{
-			Files: map[string]config.BackupFile{
-				"app_db": {SourcePath: originPath, Strategy: config.BackupStrategySqliteRsync},
+			SqliteRsync: config.BackupSqliteRsync{
+				Entries: map[string]config.BackupSqliteRsyncEntry{
+					"app_db": {SourcePath: originPath},
+				},
 			},
 		},
 	})
-	d := NewOriginDaemon[config.Config](&pointer, nil)
+	d := New[config.Config](&pointer, nil)
 	err := d.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -66,7 +68,7 @@ func TestOriginDaemonServe(t *testing.T) {
 		_ = d.Stop(context.Background())
 	}()
 
-	conn, err := net.Dial("tcp", listenAddr)
+	conn, err := net.Dial("tcp", defaultListenAddr)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -121,12 +123,14 @@ func TestOriginDaemonUnknownLabel(t *testing.T) {
 	var pointer atomic.Pointer[config.Config]
 	pointer.Store(&config.Config{
 		Backup: config.Backup{
-			Files: map[string]config.BackupFile{
-				"app_db": {SourcePath: originPath, Strategy: config.BackupStrategySqliteRsync},
+			SqliteRsync: config.BackupSqliteRsync{
+				Entries: map[string]config.BackupSqliteRsyncEntry{
+					"app_db": {SourcePath: originPath},
+				},
 			},
 		},
 	})
-	d := NewOriginDaemon[config.Config](&pointer, nil)
+	d := New[config.Config](&pointer, nil)
 	err := d.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -135,7 +139,7 @@ func TestOriginDaemonUnknownLabel(t *testing.T) {
 		_ = d.Stop(context.Background())
 	}()
 
-	conn, err := net.Dial("tcp", listenAddr)
+	conn, err := net.Dial("tcp", defaultListenAddr)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -173,12 +177,14 @@ func TestOriginDaemonStopJoinsSync(t *testing.T) {
 	var pointer atomic.Pointer[config.Config]
 	pointer.Store(&config.Config{
 		Backup: config.Backup{
-			Files: map[string]config.BackupFile{
-				"app_db": {SourcePath: originPath, Strategy: config.BackupStrategySqliteRsync},
+			SqliteRsync: config.BackupSqliteRsync{
+				Entries: map[string]config.BackupSqliteRsyncEntry{
+					"app_db": {SourcePath: originPath},
+				},
 			},
 		},
 	})
-	d := NewOriginDaemon[config.Config](&pointer, nil)
+	d := New[config.Config](&pointer, nil)
 	err := d.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -192,7 +198,7 @@ func TestOriginDaemonStopJoinsSync(t *testing.T) {
 		_ = d.Stop(context.Background())
 	}()
 
-	conn, err := net.Dial("tcp", listenAddr)
+	conn, err := net.Dial("tcp", defaultListenAddr)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -248,56 +254,18 @@ func TestOriginDaemonStopJoinsSync(t *testing.T) {
 	}
 }
 
-func TestOriginDaemonIgnoresNonRsyncStrategies(t *testing.T) {
-	originPath := filepath.Join(t.TempDir(), "origin.db")
-	createWalDB(t, originPath)
-	var pointer atomic.Pointer[config.Config]
-	pointer.Store(&config.Config{
-		Backup: config.Backup{
-			Files: map[string]config.BackupFile{
-				"app-online": {SourcePath: originPath, Strategy: config.BackupStrategyOnline},
-				"app-rsync":  {SourcePath: originPath, Strategy: config.BackupStrategySqliteRsync},
-			},
-		},
-	})
-	d := NewOriginDaemon[config.Config](&pointer, nil)
-	err := d.Run()
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	defer func() { _ = d.Stop(context.Background()) }()
-	conn, err := net.Dial("tcp", listenAddr)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer func() { _ = conn.Close() }()
-	err = sr.Write(conn, sr.LabelByte, "app-online")
-	if err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	first, text, err := sr.Read(conn)
-	if err != nil {
-		t.Fatalf("Read: %v", err)
-	}
-	if first != sr.ErrorByte || text != "unknown database" {
-		t.Fatalf("online label should be rejected as unknown database, got %v %q", first, text)
-	}
-}
-
 func TestOriginDaemonEmptyConfigListens(t *testing.T) {
 	var pointer atomic.Pointer[config.Config]
 	pointer.Store(&config.Config{
-		Backup: config.Backup{
-			Files: map[string]config.BackupFile{},
-		},
+		Backup: config.Backup{},
 	})
-	d := NewOriginDaemon[config.Config](&pointer, nil)
+	d := New[config.Config](&pointer, nil)
 	err := d.Run()
 	if err != nil {
 		t.Fatalf("Run with empty config: got %v, want nil (daemon always listens)", err)
 	}
 	defer func() { _ = d.Stop(context.Background()) }()
-	conn, err := net.Dial("tcp", listenAddr)
+	conn, err := net.Dial("tcp", defaultListenAddr)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}

@@ -95,7 +95,7 @@ func TestReplicaDaemonSync(t *testing.T) {
 	originAddr := startOrigin(t, map[string]string{"app_db": originPath})
 
 	replicaPath := filepath.Join(t.TempDir(), "replica.db")
-	d := NewReplicaDaemon(&LocalClient{originAddr: originAddr},
+	d := New(&LocalClient{originAddr: originAddr},
 		map[string]string{"app_db": replicaPath}, time.Minute, nil)
 	d.sync()
 
@@ -147,7 +147,7 @@ func TestReplicaDaemonRunStop(t *testing.T) {
 	originAddr := startOrigin(t, map[string]string{"app_db": originPath})
 
 	replicaPath := filepath.Join(t.TempDir(), "replica.db")
-	d := NewReplicaDaemon(&LocalClient{originAddr: originAddr},
+	d := New(&LocalClient{originAddr: originAddr},
 		map[string]string{"app_db": replicaPath}, time.Hour, nil)
 	err := d.Run()
 	if err != nil {
@@ -217,7 +217,7 @@ func TestReplicaDaemonStopAbortsInFlightSync(t *testing.T) {
 	originAddr, accepted := startStalledOrigin(t)
 
 	replicaPath := filepath.Join(t.TempDir(), "replica.db")
-	d := NewReplicaDaemon(&LocalClient{originAddr: originAddr},
+	d := New(&LocalClient{originAddr: originAddr},
 		map[string]string{"app_db": replicaPath}, time.Hour, nil)
 	err := d.Run()
 	if err != nil {

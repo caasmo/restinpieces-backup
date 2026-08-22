@@ -9,7 +9,10 @@
 // rest of the application configuration lives, with the shape ripc
 // scaffolds for app mode:
 //
-//	[backup.files.app_db]
+//	[backup.sqlite-rsync]
+//	listen_addr = "127.0.0.1:54321"
+//
+//	[backup.sqlite-rsync.entries.app_db]
 //	source_path = "/path/to/db"
 //	sync_timeout = "15m"
 //
@@ -84,10 +87,11 @@ func main() {
 	// New loads and validates the application configuration from the
 	// config store, so the current-config box is already populated.
 	// The origin daemon holds that box (coreApp.ConfigPointer()) and
-	// reads the backup files at every decision point.
-	// The origin daemon serves only entries with strategy "sqlite-rsync";
-	// online/vacuum entries in the same backup.files map are ignored.
-	originDaemon := origin.NewOriginDaemon[config.Config](coreApp.ConfigPointer(), nil)
+	// reads the backup.sqlite-rsync configuration at every decision
+	// point. The origin daemon serves only sqlite-rsync entries;
+	// online and vacuum entries live in separate tables and are
+	// ignored.
+	originDaemon := origin.New[config.Config](coreApp.ConfigPointer(), nil)
 
 	// The daemon satisfies the restinpieces server.Daemon contract:
 	// the server starts it with Start() after the HTTP server, and

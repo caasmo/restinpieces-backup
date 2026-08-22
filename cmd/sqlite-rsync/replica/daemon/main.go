@@ -107,7 +107,7 @@ func main() {
 		client = &SSHClient{creds: creds, originAddr: originAddr}
 	}
 
-	replicaDaemon := NewReplicaDaemon(client, map[string]string{label: replicaPath}, syncInterval, nil)
+	replicaDaemon := New(client, map[string]string{label: replicaPath}, syncInterval, nil)
 
 	r, err := run.NewRunner()
 	if err != nil {

@@ -24,18 +24,10 @@ const labelTimeout = 10 * time.Second
 // entry's SyncTimeout is left at zero.
 const defaultSyncTimeout = 15 * time.Minute
 
-// listenAddr is the TCP address the origin daemon listens on. It is
-// hardcoded: the listen address is deployment topology, not
-// application configuration, and it never changes at runtime.
-// TODO: consider making it configurable.
-const listenAddr = "127.0.0.1:54321"
+const defaultListenAddr = "127.0.0.1:54321"
 
-// OriginConfig is the minimal view of the backup configuration the
-// origin daemon needs: the files map, keyed by a database label. The
-// restinpieces application config (config.Config) and a standalone
-// user's own struct both satisfy it.
 type OriginConfig interface {
-	BackupFiles() map[string]config.BackupFile
+	BackupSqliteRsync() config.BackupSqliteRsync
 }
 
 // OriginDaemon serves the configured databases over the sqlite3_rsync
@@ -61,43 +53,42 @@ type OriginDaemon[T OriginConfig] struct {
 	cfgPointer *atomic.Pointer[T]
 }
 
-// NewOriginDaemon creates the daemon around the current-config box.
-// A nil logger falls back to slog.Default().
-func NewOriginDaemon[T OriginConfig](pointer *atomic.Pointer[T], logger *slog.Logger) *OriginDaemon[T] {
+func New[T OriginConfig](pointer *atomic.Pointer[T], logger *slog.Logger) *OriginDaemon[T] {
 	d := &OriginDaemon[T]{
 		Base:       daemon.NewBase("OriginDaemon", logger),
 		cfgPointer: pointer,
 	}
-	// Every daemon log line carries the daemon's identity: reuse the
-	// daemon_name attribute the runner attaches to lifecycle logs.
 	d.Logger = d.Logger.With("daemon_name", d.Name())
 	return d
 }
 
-// Config returns the current backup configuration for this daemon:
-// only active sqlite-rsync entries (Strategy == sqlite-rsync and
-// non-empty SourcePath). All config reads go through Config, so a
-// SIGHUP reload is visible at the next decision point (per connection,
-// per sync). The returned map contains only valid keys for this
-// strategy with non-empty source paths.
-func (d *OriginDaemon[T]) Config() map[string]config.BackupFile {
-	files := (*d.cfgPointer.Load()).BackupFiles()
-	filtered := make(map[string]config.BackupFile, len(files))
-	for k, f := range files {
-		if f.Strategy != config.BackupStrategySqliteRsync {
+func (d *OriginDaemon[T]) Config() config.BackupSqliteRsync {
+	return (*d.cfgPointer.Load()).BackupSqliteRsync()
+}
+
+func (d *OriginDaemon[T]) entries() map[string]config.BackupSqliteRsyncEntry {
+	cfg := d.Config()
+	filtered := make(map[string]config.BackupSqliteRsyncEntry, len(cfg.Entries))
+	for k, e := range cfg.Entries {
+		if e.SourcePath == "" {
 			continue
 		}
-		if f.SourcePath == "" {
-			continue
-		}
-		filtered[k] = f
+		filtered[k] = e
 	}
 	return filtered
 }
 
+func (d *OriginDaemon[T]) listenAddr() string {
+	addr := d.Config().ListenAddr
+	if addr == "" {
+		return defaultListenAddr
+	}
+	return addr
+}
+
 // hasFilesToServe reports whether the daemon has at least one file to serve.
 func (d *OriginDaemon[T]) hasFilesToServe() bool {
-	return len(d.Config()) != 0
+	return len(d.entries()) != 0
 }
 
 // Start starts the daemon under the restinpieces server.Daemon
@@ -113,13 +104,11 @@ func (d *OriginDaemon[T]) Start() error {
 // the goroutine closes the listener to unblock Accept, waits for
 // every in-flight sync to finish or abort, then closes ShutdownDone.
 func (d *OriginDaemon[T]) Run() error {
-	// No boot guard: empty Backup.Files is valid. The daemon always
-	// listens and serves; handleConn rejects unknown/deactivated/non-rsync
-	// labels with "unknown database".
-	listener, err := net.Listen("tcp", listenAddr)
+	listener, err := net.Listen("tcp", d.listenAddr())
 	if err != nil {
-		return fmt.Errorf("failed to listen on %s: %w", listenAddr, err)
+		return fmt.Errorf("failed to listen on %s: %w", d.listenAddr(), err)
 	}
+	d.Logger.Info("listening", "listen_addr", d.listenAddr())
 
 	// The errgroup owns one goroutine per accepted connection. No
 	// concurrency cap: the peer is the trusted loopback backup
@@ -223,7 +212,7 @@ func (d *OriginDaemon[T]) handleConn(conn net.Conn) (err error) {
 		return fmt.Errorf("%w: first message must name a database", sr.ErrInvalid)
 	}
 	label := text
-	fileCfg, ok := d.Config()[label]
+	fileCfg, ok := d.entries()[label]
 	if !ok {
 		return sr.Write(conn, sr.ErrorByte, "unknown database")
 	}

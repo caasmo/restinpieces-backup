@@ -24,7 +24,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	localCopyDaemon := NewLocalCopyDaemon(cfg, nil)
+	localCopyDaemon := New(cfg, nil)
 
 	r, err := run.NewRunner()
 	if err != nil {
@@ -43,43 +43,19 @@ func main() {
 	}
 }
 
-// readConfig loads the backup configuration from the TOML file, fills
-// per-file tuning defaults, and validates it. The file holds the
-// framework's Backup shape: one [files.<label>] section per database.
-// (Temporary stopgap for the go-daemon-runner configProvider — see the
-// phase lead-in.)
 func readConfig(path string) (*config.Backup, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
-
 	cfg := &config.Backup{}
 	err = toml.Unmarshal(data, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
-
-	// Hand-written minimal entries (source/dest/frequency only) get the
-	// NewBackupOnlineDefaults tuning values: strategy defaults to online
-	// at runtime, which demands pages_per_step >= 1 (Step(0) would copy
-	// nothing and never finish) and tolerates a zero sleep interval (no
-	// throttling).
-	def := config.NewBackupOnlineDefaults()
-	for key, f := range cfg.Files {
-		if f.OnlineAPIPagesPerStep == 0 {
-			f.OnlineAPIPagesPerStep = def.OnlineAPIPagesPerStep
-		}
-		if f.OnlineAPISleepInterval.Duration == 0 {
-			f.OnlineAPISleepInterval = def.OnlineAPISleepInterval
-		}
-		cfg.Files[key] = f
-	}
-
 	err = config.ValidateBackup(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("config validation failed: %w", err)
 	}
-
 	return cfg, nil
 }

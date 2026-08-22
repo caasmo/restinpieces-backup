@@ -69,26 +69,20 @@ func setupTest(t *testing.T, withData bool) (cfg *config.Backup, sourceDbPath, b
 	return cfg, sourceDbPath, backupDir
 }
 
-// addDatabase adds a database file entry to the Backup files map.
 func addDatabase(cfg *config.Backup, backupDir, key, sourcePath string, compress bool, strategy, frequency string) {
-	freq, err := time.ParseDuration(frequency)
-	if err != nil {
-		panic(fmt.Sprintf("invalid test frequency %q: %v", frequency, err))
+	if cfg.Online == nil {
+		cfg.Online = make(config.BackupOnline)
 	}
-	if cfg.Files == nil {
-		cfg.Files = make(map[string]config.BackupFile)
+	if cfg.Vacuum == nil {
+		cfg.Vacuum = make(config.BackupVacuum)
 	}
-	entry := config.BackupFile{
-		SourcePath:  sourcePath,
-		DestPath:    backupDir,
-		Compression: compress,
-		Strategy:    strategy,
-		Frequency:   config.Duration{Duration: freq},
+	freq, _ := time.ParseDuration(frequency)
+	switch strategy {
+	case "online", "": // the BackupStrategy* constants are deleted (Phase 1); tests use literals
+		cfg.Online[key] = config.BackupOnlineEntry{SourcePath: sourcePath, DestPath: backupDir, Frequency: config.Duration{Duration: freq}, Compression: compress, PagesPerStep: 100, SleepInterval: config.Duration{Duration: 10 * time.Millisecond}}
+	case "vacuum":
+		cfg.Vacuum[key] = config.BackupVacuumEntry{SourcePath: sourcePath, DestPath: backupDir, Frequency: config.Duration{Duration: freq}, Compression: compress}
 	}
-	if strategy == "" || strategy == config.BackupStrategyOnline {
-		entry.OnlineAPIPagesPerStep = 100
-	}
-	cfg.Files[key] = entry
 }
 
 // verifyBackup checks if a backup file is a valid, non-empty SQLite database.
@@ -168,10 +162,10 @@ func TestEngine_Handle_SingleDB(t *testing.T) {
 		strategy    string
 		compression bool
 	}{
-		{"OnlineCompressed", config.BackupStrategyOnline, true},
-		{"OnlineUncompressed", config.BackupStrategyOnline, false},
-		{"VacuumCompressed", config.BackupStrategyVacuum, true},
-		{"VacuumUncompressed", config.BackupStrategyVacuum, false},
+		{"OnlineCompressed", "online", true},
+		{"OnlineUncompressed", "online", false},
+		{"VacuumCompressed", "vacuum", true},
+		{"VacuumUncompressed", "vacuum", false},
 		{"DefaultStrategyCompressed", "", true},
 	}
 
@@ -227,8 +221,8 @@ func TestEngine_Handle_MultiDB(t *testing.T) {
 	createUsersDB(t, secondDbPath, true)
 
 	// Add both databases: first uncompressed (online), second compressed (vacuum)
-	addDatabase(cfg, backupDir, "first", sourcePath, false, config.BackupStrategyOnline, "24h")
-	addDatabase(cfg, backupDir, "second", secondDbPath, true, config.BackupStrategyVacuum, "24h")
+	addDatabase(cfg, backupDir, "first", sourcePath, false, "online", "24h")
+	addDatabase(cfg, backupDir, "second", secondDbPath, true, "vacuum", "24h")
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := NewEngine(cfg, logger)
@@ -283,7 +277,7 @@ func TestEngine_Handle_NoFiles(t *testing.T) {
 
 func TestEngine_Handle_Deactivated(t *testing.T) {
 	cfg, sourcePath, _ := setupTest(t, true)
-	addDatabase(cfg, "", "source", sourcePath, false, config.BackupStrategyOnline, "24h") // empty dest_path deactivates the entry
+	addDatabase(cfg, "", "source", sourcePath, false, "online", "24h") // empty dest_path deactivates the entry
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := NewEngine(cfg, logger)
@@ -297,11 +291,16 @@ func TestEngine_Handle_Deactivated(t *testing.T) {
 func TestEngine_Handle_EmptySourcePathSkipped(t *testing.T) {
 	mockTime := time.Date(2025, 8, 1, 10, 30, 0, 0, time.UTC)
 	cfg, sourcePath, backupDir := setupTest(t, true)
-	addDatabase(cfg, backupDir, "active", sourcePath, false, config.BackupStrategyOnline, "24h")
-	cfg.Files["deactivated"] = config.BackupFile{
+	addDatabase(cfg, backupDir, "active", sourcePath, false, "online", "24h")
+	if cfg.Online == nil {
+		cfg.Online = make(config.BackupOnline)
+	}
+	cfg.Online["deactivated"] = config.BackupOnlineEntry{
 		SourcePath: "",
 		DestPath:   backupDir,
 		Frequency:  config.Duration{Duration: 24 * time.Hour},
+		PagesPerStep: 100,
+		SleepInterval: config.Duration{Duration: 10 * time.Millisecond},
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -340,7 +339,7 @@ func TestEngine_Handle_DestPathNotADirectory(t *testing.T) {
 	if err := os.WriteFile(notADir, []byte("x"), 0644); err != nil {
 		t.Fatalf("failed to create file: %v", err)
 	}
-	addDatabase(cfg, notADir, "source", sourcePath, false, config.BackupStrategyOnline, "24h")
+	addDatabase(cfg, notADir, "source", sourcePath, false, "online", "24h")
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := NewEngine(cfg, logger)
@@ -353,7 +352,7 @@ func TestEngine_Handle_DestPathNotADirectory(t *testing.T) {
 
 func TestEngine_Handle_FrequencyRespected(t *testing.T) {
 	cfg, sourcePath, backupDir := setupTest(t, true)
-	addDatabase(cfg, backupDir, "source", sourcePath, false, config.BackupStrategyOnline, "2h") // frequency: 2 hours
+	addDatabase(cfg, backupDir, "source", sourcePath, false, "online", "2h") // frequency: 2 hours
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := NewEngine(cfg, logger)
@@ -426,7 +425,7 @@ func TestEngine_Handle_ErrorCases(t *testing.T) {
 
 	t.Run("SourceNotFound", func(t *testing.T) {
 		cfg, _, backupDir := setupTest(t, true)
-		addDatabase(cfg, backupDir, "source", "/path/to/nonexistent/source.db", false, config.BackupStrategyOnline, "24h")
+		addDatabase(cfg, backupDir, "source", "/path/to/nonexistent/source.db", false, "online", "24h")
 		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 		engine := NewEngine(cfg, logger)
 
@@ -438,7 +437,7 @@ func TestEngine_Handle_ErrorCases(t *testing.T) {
 
 	t.Run("BackupDirNotWritable", func(t *testing.T) {
 		cfg, sourcePath, backupDir := setupTest(t, true)
-		addDatabase(cfg, backupDir, "source", sourcePath, false, config.BackupStrategyOnline, "24h")
+		addDatabase(cfg, backupDir, "source", sourcePath, false, "online", "24h")
 		// Make the backup directory read-only
 		if err := os.Chmod(backupDir, 0400); err != nil {
 			t.Fatalf("Failed to make backup dir read-only: %v", err)
@@ -456,7 +455,7 @@ func TestEngine_Handle_ErrorCases(t *testing.T) {
 
 func TestEngine_Handle_EmptyDatabase(t *testing.T) {
 	cfg, sourcePath, backupDir := setupTest(t, false) // false -> don't add data
-	addDatabase(cfg, backupDir, "source", sourcePath, false, config.BackupStrategyOnline, "24h")
+	addDatabase(cfg, backupDir, "source", sourcePath, false, "online", "24h")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := NewEngine(cfg, logger)
 
@@ -493,12 +492,13 @@ func TestEngine_Handle_EmptySource(t *testing.T) {
 	}
 
 	cfg := &config.Backup{}
-	cfg.Files = map[string]config.BackupFile{
+	cfg.Online = config.BackupOnline{
 		"source": {
-			SourcePath:            sourcePath,
-			DestPath:              backupDir,
-			Frequency:             config.Duration{Duration: 24 * time.Hour},
-			OnlineAPIPagesPerStep: 100,
+			SourcePath:   sourcePath,
+			DestPath:     backupDir,
+			Frequency:    config.Duration{Duration: 24 * time.Hour},
+			PagesPerStep: 100,
+			SleepInterval: config.Duration{Duration: 10 * time.Millisecond},
 		},
 	}
 
@@ -533,12 +533,13 @@ func TestEngine_Handle_NotADatabaseFile(t *testing.T) {
 	}
 
 	cfg := &config.Backup{}
-	cfg.Files = map[string]config.BackupFile{
+	cfg.Online = config.BackupOnline{
 		"source": {
-			SourcePath:            sourcePath,
-			DestPath:              backupDir,
-			Frequency:             config.Duration{Duration: 24 * time.Hour},
-			OnlineAPIPagesPerStep: 100,
+			SourcePath:   sourcePath,
+			DestPath:     backupDir,
+			Frequency:    config.Duration{Duration: 24 * time.Hour},
+			PagesPerStep: 100,
+			SleepInterval: config.Duration{Duration: 10 * time.Millisecond},
 		},
 	}
 
@@ -568,12 +569,13 @@ func TestEngine_Handle_MissingSourceFile(t *testing.T) {
 	}
 
 	cfg := &config.Backup{}
-	cfg.Files = map[string]config.BackupFile{
+	cfg.Online = config.BackupOnline{
 		"source": {
-			SourcePath:            filepath.Join(tempDir, "missing.db"),
-			DestPath:              backupDir,
-			Frequency:             config.Duration{Duration: 24 * time.Hour},
-			OnlineAPIPagesPerStep: 100,
+			SourcePath:   filepath.Join(tempDir, "missing.db"),
+			DestPath:     backupDir,
+			Frequency:    config.Duration{Duration: 24 * time.Hour},
+			PagesPerStep: 100,
+			SleepInterval: config.Duration{Duration: 10 * time.Millisecond},
 		},
 	}
 
@@ -762,7 +764,7 @@ func TestEngine_Handle_CompressedError(t *testing.T) {
 
 	t.Run("SourceMissing", func(t *testing.T) {
 		cfg, _, backupDir := setupTest(t, true)
-		addDatabase(cfg, backupDir, "source", "/nonexistent/source.db", true, config.BackupStrategyOnline, "24h")
+		addDatabase(cfg, backupDir, "source", "/nonexistent/source.db", true, "online", "24h")
 
 		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 		engine := NewEngine(cfg, logger)
@@ -775,7 +777,7 @@ func TestEngine_Handle_CompressedError(t *testing.T) {
 
 	t.Run("BackupDirNotWritable", func(t *testing.T) {
 		cfg, sourcePath, backupDir := setupTest(t, true)
-		addDatabase(cfg, backupDir, "source", sourcePath, true, config.BackupStrategyOnline, "24h")
+		addDatabase(cfg, backupDir, "source", sourcePath, true, "online", "24h")
 		if err := os.Chmod(backupDir, 0400); err != nil {
 			t.Fatalf("Failed to make backup dir read-only: %v", err)
 		}
@@ -812,11 +814,11 @@ func TestModuloLogger_Log(t *testing.T) {
 		t.Logf("Failed to close db connection: %v", err)
 	}
 
-	addDatabase(cfg, backupDir, "source", sourcePath, false, config.BackupStrategyOnline, "24h")
+	addDatabase(cfg, backupDir, "source", sourcePath, false, "online", "24h")
 	// force many small steps
-	source := cfg.Files["source"]
-	source.OnlineAPIPagesPerStep = 1
-	cfg.Files["source"] = source
+	source := cfg.Online["source"]
+	source.PagesPerStep = 1
+	cfg.Online["source"] = source
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := NewEngine(cfg, logger)

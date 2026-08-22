@@ -15,30 +15,24 @@ import (
 
 // originCfg is the standalone origin configuration: the [backup]
 // section of the application config document. It satisfies
-// OriginConfig; the daemon reads the backup files through
-// BackupFiles.
+// OriginConfig; the daemon reads the backup configuration through
+// BackupSqliteRsync.
 //
-// The section shape lives in restinpieces (config.Backup and
-// config.BackupFile) and the strategy constants
-// (config.BackupStrategyOnline, config.BackupStrategyVacuum,
-// config.BackupStrategySqliteRsync). Users who do not want to import
-// restinpieces can copy those two structs and the three constants here
-// and use them locally (or hard-code "sqlite-rsync" in the strategy
-// filter).
+// The section shape lives in restinpieces (config.Backup,
+// config.BackupOnline, config.BackupVacuum, config.BackupSqliteRsync
+// and their entry types). Users who do not want to import restinpieces
+// can copy those structs here and use them locally.
 //
 // There is no validation in the standalone path: the daemon only
-// checks that at least one file with strategy "sqlite-rsync" is
-// configured. Users who want validation can copy
-// config.ValidateBackup from restinpieces here and call it after
-// unmarshal.
+// checks that at least one sqlite-rsync entry is configured. Users
+// who want validation can copy config.ValidateBackup from restinpieces
+// here and call it after unmarshal.
 type originCfg struct {
-	Backup config.Backup
+	Backup config.Backup `toml:"backup"`
 }
 
-// BackupFiles returns the configured backup files, keyed by database
-// label.
-func (c originCfg) BackupFiles() map[string]config.BackupFile {
-	return c.Backup.Files
+func (c originCfg) BackupSqliteRsync() config.BackupSqliteRsync {
+	return c.Backup.SqliteRsync
 }
 
 // readConfig loads the configuration from a TOML file whose [backup]
@@ -69,7 +63,7 @@ func main() {
 
 	var pointer atomic.Pointer[originCfg]
 	pointer.Store(&cfg)
-	originDaemon := origin.NewOriginDaemon[originCfg](&pointer, nil)
+	originDaemon := origin.New[originCfg](&pointer, nil)
 
 	r, err := run.NewRunner()
 	if err != nil {

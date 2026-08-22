@@ -57,7 +57,7 @@ var (
 // filename. The backup directory is not part of the struct.
 type backupFile struct {
 	// backupID identifies the configured source file this backup belongs to:
-	// the config label (backup.files.<key>) joined with the source
+	// the config label (backup.online.<key> or backup.vacuum.<key>) joined with the source
 	// file's basename, e.g. label "app" + source_path "data/app.db"
 	// → "app-app.db".
 	backupID   string
@@ -104,6 +104,24 @@ func parseBackupFile(filename string) (backupFile, error) {
 	}, nil
 }
 
+// dumpFunc performs one backup copy of the source database into
+// destPath. onlineBackup and vacuumInto are the two implementations.
+type dumpFunc func(ctx context.Context, srcConn *sql.Conn, destPath string, entry backupEntry) error
+
+// backupEntry is the engine's view of one configured backup: the
+// fields both strategies share, plus the strategy's dump function.
+// entries() builds one per configured label.
+type backupEntry struct {
+	label         string
+	sourcePath    string
+	destPath      string
+	frequency     time.Duration
+	compression   bool
+	pagesPerStep  int
+	sleepInterval time.Duration
+	dump          dumpFunc
+}
+
 // Engine runs the local copy backup engine. handle is its testable
 // core; daemon.go adds the go-daemon-runner lifecycle.
 type Engine struct {
@@ -113,7 +131,7 @@ type Engine struct {
 
 // NewEngine creates the engine around the already validated config
 // snapshot. A nil logger falls back to slog.Default(), mirroring the
-// daemon constructors (daemon.NewBase, NewLocalCopyDaemon).
+// daemon constructors (daemon.NewBase, New).
 func NewEngine(cfg *config.Backup, logger *slog.Logger) *Engine {
 	if logger == nil {
 		logger = slog.Default()
@@ -121,14 +139,43 @@ func NewEngine(cfg *config.Backup, logger *slog.Logger) *Engine {
 	return &Engine{cfg: cfg, logger: logger}
 }
 
-// handle runs one copy over every configured file. Files that
-// are not yet due, or whose source or destination path is empty
-// (deactivated), are skipped. Errors are collected and returned
-// together. On shutdown the context is cancelled and the loop aborts
-// at the next entry boundary, returning the context error.
+// entries returns the engine's view of every configured backup in
+// deterministic order: the online entries by sorted label, then the
+// vacuum entries by sorted label.
+func (e *Engine) entries() []backupEntry {
+	var entries []backupEntry
+	for _, key := range slices.Sorted(maps.Keys(e.cfg.Online)) {
+		f := e.cfg.Online[key]
+		entries = append(entries, backupEntry{
+			label:         key,
+			sourcePath:    f.SourcePath,
+			destPath:      f.DestPath,
+			frequency:     f.Frequency.Duration,
+			compression:   f.Compression,
+			pagesPerStep:  f.PagesPerStep,
+			sleepInterval: f.SleepInterval.Duration,
+			dump:          e.onlineBackup,
+		})
+	}
+	for _, key := range slices.Sorted(maps.Keys(e.cfg.Vacuum)) {
+		f := e.cfg.Vacuum[key]
+		entries = append(entries, backupEntry{
+			label:       key,
+			sourcePath:  f.SourcePath,
+			destPath:    f.DestPath,
+			frequency:   f.Frequency.Duration,
+			compression: f.Compression,
+			dump:        e.vacuumInto,
+		})
+	}
+	return entries
+}
+
+// handle runs one copy over every configured database in turn,
+// online entries first, then vacuum entries. A failed copy is logged
+// and the next entry is tried; errors are returned together.
 func (e *Engine) handle(ctx context.Context, now time.Time) error {
-	// --- early exit: backup deactivated ---
-	if len(e.cfg.Files) == 0 {
+	if len(e.cfg.Online)+len(e.cfg.Vacuum) == 0 {
 		e.logger.Info("No backup files configured; backup deactivated.")
 		return nil
 	}
@@ -136,76 +183,74 @@ func (e *Engine) handle(ctx context.Context, now time.Time) error {
 	latest := e.latestBackupFiles(e.cfg)
 
 	var errs []error
-	// Deterministic order: map iteration is random per run, and the
-	// backup order (and the first error reported) must be stable.
-	for _, key := range slices.Sorted(maps.Keys(e.cfg.Files)) {
-		fileCfg := e.cfg.Files[key]
+	for _, entry := range e.entries() {
 		// --- step 0: abort on shutdown ---
-		if err := ctx.Err(); err != nil {
-			return err
+		ctxErr := ctx.Err()
+		if ctxErr != nil {
+			return ctxErr
 		}
 
 		// --- step 1: skip entries with empty source_path (deactivated) ---
-		if fileCfg.SourcePath == "" {
-			e.logger.Info("Skipping backup; source_path is empty (entry deactivated)", "db", key)
+		if entry.sourcePath == "" {
+			e.logger.Info("Skipping backup; source_path is empty (entry deactivated)", "db", entry.label)
 			continue
 		}
 
 		// --- step 2: skip entries with empty dest_path (deactivated) ---
-		if fileCfg.DestPath == "" {
-			e.logger.Info("Skipping backup; dest_path is empty (entry deactivated)", "db", key)
+		if entry.destPath == "" {
+			e.logger.Info("Skipping backup; dest_path is empty (entry deactivated)", "db", entry.label)
 			continue
 		}
 
-		backupID := e.buildBackupID(key, fileCfg.SourcePath)
+		backupID := e.buildBackupID(entry.label, entry.sourcePath)
 
 		// --- step 3: skip if not yet due ---
-		if !e.isBackupDue(latest[backupID].time, fileCfg.Frequency.Duration, now) {
+		if !e.isBackupDue(latest[backupID].time, entry.frequency, now) {
 			e.logger.Info("Skipping backup; not yet due",
 				"db", backupID,
-				"due_at", latest[backupID].time.Add(fileCfg.Frequency.Duration).Format(timestampFormat),
+				"due_at", latest[backupID].time.Add(entry.frequency).Format(timestampFormat),
 			)
 			continue
 		}
 
 		// --- step 4: dest_path must be an existing directory ---
-		dirInfo, statErr := os.Stat(fileCfg.DestPath)
+		dirInfo, statErr := os.Stat(entry.destPath)
 		if statErr != nil {
 			errs = append(errs, fmt.Errorf("%q: dest_path: %w", backupID, statErr))
 			continue
 		}
 		if !dirInfo.IsDir() {
-			errs = append(errs, fmt.Errorf("%q: dest_path is not a directory: %s", backupID, fileCfg.DestPath))
+			errs = append(errs, fmt.Errorf("%q: dest_path is not a directory: %s", backupID, entry.destPath))
 			continue
 		}
 
 		// --- step 5: source file must exist and be a file ---
-		srcInfo, srcErr := os.Stat(fileCfg.SourcePath)
+		srcInfo, srcErr := os.Stat(entry.sourcePath)
 		if srcErr != nil {
-			errs = append(errs, fmt.Errorf("%q: source database file not found: %s: %w", backupID, fileCfg.SourcePath, srcErr))
+			errs = append(errs, fmt.Errorf("%q: source database file not found: %s: %w", backupID, entry.sourcePath, srcErr))
 			continue
 		}
 		if srcInfo.IsDir() {
-			errs = append(errs, fmt.Errorf("%q: source path is a directory, not a database file: %s", backupID, fileCfg.SourcePath))
+			errs = append(errs, fmt.Errorf("%q: source path is a directory, not a database file: %s", backupID, entry.sourcePath))
 			continue
 		}
 
 		// --- step 6: backup copy ---
-		err := e.handleDbFile(ctx, fileCfg, backupID, now)
-		if err != nil {
-			errs = append(errs, err)
+		copyErr := e.handleDbFile(ctx, entry, backupID, now)
+		if copyErr != nil {
+			errs = append(errs, copyErr)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// handleDbFile: backup copy for one configured file. Opens its own
+// handleDbFile runs one backup copy for one entry. Opens its own
 // source pool and connection; the defers close them on every return
-// path.
-func (e *Engine) handleDbFile(ctx context.Context, fileCfg config.BackupFile, backupID string, now time.Time) error {
-	backupDir := fileCfg.DestPath
+// path. The strategy's dump runs via entry.dump.
+func (e *Engine) handleDbFile(ctx context.Context, entry backupEntry, backupID string, now time.Time) error {
+	backupDir := entry.destPath
 
-	srcDB, srcConn, openErr := openSourceConn(ctx, fileCfg.SourcePath)
+	srcDB, srcConn, openErr := openSourceConn(ctx, entry.sourcePath)
 	if openErr != nil {
 		return fmt.Errorf("%q: open source db: %w", backupID, openErr)
 	}
@@ -220,25 +265,19 @@ func (e *Engine) handleDbFile(ctx context.Context, fileCfg config.BackupFile, ba
 		}
 	}()
 
-	backupFn := e.onlineBackup // default
-	if fileCfg.Strategy == config.BackupStrategyVacuum {
-		backupFn = e.vacuumInto
-	}
-
 	f := backupFile{
 		backupID:   backupID,
 		time:       now,
-		compressed: fileCfg.Compression,
+		compressed: entry.compression,
 	}
 	finalPath := filepath.Join(backupDir, f.String())
 
-	var err error
-	if fileCfg.Compression {
+	if entry.compression {
 		tempPath := e.buildTempPath(backupID, now)
 		tempFinalPath := finalPath + ".tmp" // same directory, os.Rename is atomic
 
 		// --- 5a: dump to temp ---
-		err = backupFn(ctx, srcConn, tempPath, fileCfg)
+		err := entry.dump(ctx, srcConn, tempPath, entry)
 		if err != nil {
 			removeErr := os.Remove(tempPath)
 			if removeErr != nil {
@@ -270,40 +309,37 @@ func (e *Engine) handleDbFile(ctx context.Context, fileCfg config.BackupFile, ba
 			}
 			return fmt.Errorf("%q: %w", backupID, err)
 		}
-	} else {
-		tempFinalPath := finalPath + ".tmp" // same directory, os.Rename is atomic
-
-		// --- 5a: dump to .tmp in backupDir ---
-		err = backupFn(ctx, srcConn, tempFinalPath, fileCfg)
-		if err != nil {
-			removeErr := os.Remove(tempFinalPath)
-			if removeErr != nil {
-				e.logger.Error("Failed to remove .tmp file after failed backup", "path", tempFinalPath, "error", removeErr)
-			}
-			return fmt.Errorf("%q: %w", backupID, err)
-		}
-
-		// --- 5b: atomic promote ---
-		err = os.Rename(tempFinalPath, finalPath)
-		if err != nil {
-			removeErr := os.Remove(tempFinalPath)
-			if removeErr != nil {
-				e.logger.Error("Failed to remove .tmp file after failed rename", "path", tempFinalPath, "error", removeErr)
-			}
-			return fmt.Errorf("%q: %w", backupID, err)
-		}
-
-		// --- 5c: update latest link ---
-		// Uncompressed only — the rsync pull client needs a stable
-		// filename to sync. Compressed .bck.gz is not consumable as-is,
-		// so no link is created for it.
-		latestPath := e.buildLatestPath(backupDir, backupID)
-		err = e.linkLatest(finalPath, latestPath)
-		if err != nil {
-			return fmt.Errorf("%q: %w", backupID, err)
-		}
+		return nil
 	}
-	return nil
+
+	tempFinalPath := finalPath + ".tmp" // same directory, os.Rename is atomic
+
+	// --- 5a: dump to .tmp in backupDir ---
+	err := entry.dump(ctx, srcConn, tempFinalPath, entry)
+	if err != nil {
+		removeErr := os.Remove(tempFinalPath)
+		if removeErr != nil {
+			e.logger.Error("Failed to remove .tmp file after failed backup", "path", tempFinalPath, "error", removeErr)
+		}
+		return fmt.Errorf("%q: %w", backupID, err)
+	}
+
+	// --- 5b: atomic promote ---
+	err = os.Rename(tempFinalPath, finalPath)
+	if err != nil {
+		removeErr := os.Remove(tempFinalPath)
+		if removeErr != nil {
+			e.logger.Error("Failed to remove .tmp file after failed rename", "path", tempFinalPath, "error", removeErr)
+		}
+		return fmt.Errorf("%q: %w", backupID, err)
+	}
+
+	// --- 5c: update latest link ---
+	// Uncompressed only — the rsync pull client needs a stable
+	// filename to sync. Compressed .bck.gz is not consumable as-is,
+	// so no link is created for it.
+	latestPath := e.buildLatestPath(backupDir, backupID)
+	return e.linkLatest(finalPath, latestPath)
 }
 
 // buildBackupID returns the prefix used in backup filenames and hardlinks.
@@ -333,17 +369,21 @@ func (e *Engine) buildLatestPath(backupDir, dbName string) string {
 // empty map is returned when a directory is absent or unreadable (all
 // backups in it are treated as due).
 func (e *Engine) latestBackupFiles(cfg *config.Backup) map[string]backupFile {
-	// destDirs maps each configured destination directory to the
-	// backupIDs expected inside it.
 	destDirs := make(map[string][]string)
-	for _, key := range slices.Sorted(maps.Keys(cfg.Files)) {
-		f := cfg.Files[key]
+	for _, key := range slices.Sorted(maps.Keys(cfg.Online)) {
+		f := cfg.Online[key]
 		if f.SourcePath == "" || f.DestPath == "" {
 			continue // deactivated entry, never backed up
 		}
 		destDirs[f.DestPath] = append(destDirs[f.DestPath], e.buildBackupID(key, f.SourcePath))
 	}
-
+	for _, key := range slices.Sorted(maps.Keys(cfg.Vacuum)) {
+		f := cfg.Vacuum[key]
+		if f.SourcePath == "" || f.DestPath == "" {
+			continue // deactivated entry, never backed up
+		}
+		destDirs[f.DestPath] = append(destDirs[f.DestPath], e.buildBackupID(key, f.SourcePath))
+	}
 	latest := make(map[string]backupFile)
 	for _, dir := range slices.Sorted(maps.Keys(destDirs)) {
 		backupIDs := destDirs[dir]
@@ -449,13 +489,8 @@ func openSourceConn(ctx context.Context, dbPath string) (*sql.DB, *sql.Conn, err
 	return db, conn, nil
 }
 
-// vacuumInto creates a clean, defragmented copy of the database. The
-// ExecContext carries the daemon context: on shutdown the driver
-// interrupts the statement (SQLITE_INTERRUPT) and the partial copy
-// stays in the caller's temp path, never a backup.
-func (e *Engine) vacuumInto(ctx context.Context, srcConn *sql.Conn, destPath string, fileCfg config.BackupFile) error {
-	// The path goes inside a SQL string literal: doubling the quotes
-	// makes any path legal (' is valid in POSIX filenames).
+// vacuumInto creates a clean, defragmented copy of the database.
+func (e *Engine) vacuumInto(ctx context.Context, srcConn *sql.Conn, destPath string, entry backupEntry) error {
 	destPath = strings.ReplaceAll(destPath, "'", "''")
 	_, err := srcConn.ExecContext(ctx, fmt.Sprintf("VACUUM INTO '%s';", destPath))
 	if err != nil {
@@ -465,15 +500,14 @@ func (e *Engine) vacuumInto(ctx context.Context, srcConn *sql.Conn, destPath str
 }
 
 // onlineBackup performs a live backup using the SQLite Online Backup
-// API. The source connection stays checked out for the whole copy, so
-// the Backup object's Step loop always runs against a live connection;
-// the destination database is opened and closed by the Backup itself.
-// On shutdown the copy aborts at the next step boundary; the deferred
-// Finish releases the destination and the partial copy stays in the
-// caller's temp path.
-func (e *Engine) onlineBackup(ctx context.Context, srcConn *sql.Conn, destPath string, fileCfg config.BackupFile) error {
-	pagesPerStep := fileCfg.OnlineAPIPagesPerStep
-	sleepInterval := fileCfg.OnlineAPISleepInterval.Duration
+// API. pages_per_step 0 means "use default": validation allows it and
+// this is where the 100-page default is applied.
+func (e *Engine) onlineBackup(ctx context.Context, srcConn *sql.Conn, destPath string, entry backupEntry) error {
+	pagesPerStep := entry.pagesPerStep
+	if pagesPerStep == 0 {
+		pagesPerStep = config.NewBackupOnlineEntryDefaults().PagesPerStep
+	}
+	sleepInterval := entry.sleepInterval // 0 is valid: no throttling
 
 	backup, err := newBackup(srcConn, destPath)
 	if err != nil {

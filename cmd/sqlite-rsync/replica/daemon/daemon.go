@@ -38,12 +38,12 @@ type ReplicaDaemon struct {
 	interval time.Duration
 }
 
-// NewReplicaDaemon creates the daemon around the already constructed
+// New creates the daemon around the already constructed
 // client and the label-to-replica-path mapping. main builds the client
 // (from -l/--local and the environment) and passes it in; the daemon
 // reads no environment itself. A nil logger falls back to
 // slog.Default().
-func NewReplicaDaemon(client Client, files map[string]string, interval time.Duration, logger *slog.Logger) *ReplicaDaemon {
+func New(client Client, files map[string]string, interval time.Duration, logger *slog.Logger) *ReplicaDaemon {
 	if interval <= 0 {
 		interval = defaultSyncInterval
 	}

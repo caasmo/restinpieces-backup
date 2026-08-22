@@ -33,16 +33,13 @@ type LocalCopyDaemon struct {
 	*Engine
 }
 
-// NewLocalCopyDaemon creates the daemon around the already
-// validated config snapshot. A nil logger falls back to
-// slog.Default(). The Engine is embedded: its methods are promoted,
-// so the copy runs d.handle directly.
-func NewLocalCopyDaemon(cfg *config.Backup, logger *slog.Logger) *LocalCopyDaemon {
+// New creates the daemon around the already validated config snapshot. A
+// nil logger falls back to slog.Default(). The Engine is embedded: its
+// methods are promoted, so the copy runs d.handle directly.
+func New(cfg *config.Backup, logger *slog.Logger) *LocalCopyDaemon {
 	d := &LocalCopyDaemon{
 		Base: daemon.NewBase("LocalCopyDaemon", logger),
 	}
-	// Every daemon log line carries the daemon's identity: reuse the
-	// daemon_name attribute the runner attaches to lifecycle logs.
 	d.Logger = d.Logger.With("daemon_name", d.Name())
 	d.Engine = NewEngine(cfg, d.Logger)
 	return d
@@ -119,12 +116,20 @@ func (d *LocalCopyDaemon) copy() {
 // when no entry is active, in which case Run never starts the ticker.
 func (d *LocalCopyDaemon) interval() time.Duration {
 	var min time.Duration
-	for _, f := range d.cfg.Files {
-		if f.SourcePath == "" || f.DestPath == "" {
+	for _, e := range d.cfg.Online {
+		if e.SourcePath == "" || e.DestPath == "" {
 			continue
 		}
-		if min == 0 || f.Frequency.Duration < min {
-			min = f.Frequency.Duration
+		if min == 0 || e.Frequency.Duration < min {
+			min = e.Frequency.Duration
+		}
+	}
+	for _, e := range d.cfg.Vacuum {
+		if e.SourcePath == "" || e.DestPath == "" {
+			continue
+		}
+		if min == 0 || e.Frequency.Duration < min {
+			min = e.Frequency.Duration
 		}
 	}
 	return min
