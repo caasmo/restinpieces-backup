@@ -67,11 +67,15 @@ go build -o sqlite-rsync-origin ./cmd/sqlite-rsync/origin/daemon
 
 ### Configuration file
 
-It reads a TOML config file with `-config <path>`:
+It reads a TOML config file with `-config <path>`. It uses the same shape `ripc` scaffolds:
 
 ```toml
-[backup.files.db]
+[backup.sqlite-rsync]
+listen_addr = "127.0.0.1:54321"
+
+[backup.sqlite-rsync.entries.db]
 source_path = "/path/to/db"
+sync_timeout = "15m"
 ```
 
 ## sqlite3-rsync client (`cmd/sqlite-rsync/replica/daemon`)
@@ -91,11 +95,11 @@ go build -o sqlite-rsync-client ./cmd/sqlite-rsync/replica/daemon
 | `RIP_BCK_REPLICA_LABEL` | yes | The name both sides use for the database (the origin serves `db` for now); the replica lives at `<dir>/<label>.db` |
 | `RIP_BCK_REPLICA_DIR` | yes | Local directory the replica database is written into (created if missing) |
 
-Everything else is hardcoded for now: the origin address (`127.0.0.1:9909`), the sync interval (15 minutes), and the SSH credentials — see [SSH mode (the default)](#ssh-mode-the-default). Edit them in `main.go`, rebuild, and run.
+Everything else is hardcoded: origin address (`127.0.0.1:54321`), sync interval (15m), and SSH credentials — see [SSH mode](#ssh-mode-the-default). Edit `main.go`, rebuild, run.
 
 ### SSH mode (the default)
 
-The default transport reaches the origin over SSH. The origin server runs on the machine that also runs the system SSH server and listens on `127.0.0.1:9909`. Each sync connects to that machine's sshd, authenticates with the private key, and asks the SSH server to open the connection to `127.0.0.1:9909` on its side — the sync then runs over that connection, exactly as in local mode but with the SSH hop in front. No extra port is opened on the origin. The host key is pinned: a connection to a server with any other key fails. The credentials are hardcoded in `main.go` for now: user `backup`, host `127.0.0.1`, port `22`, private key at `/etc/restinpieces-backup/backup_ed25519`, host key at `/etc/restinpieces-backup/host_key`; the host is a placeholder that points at the local machine so SSH mode can be exercised in a development setup.
+The default transport reaches the origin over SSH. The origin listens on `127.0.0.1:54321`. Each sync connects to the origin machine's sshd, authenticates, and asks sshd to open `127.0.0.1:54321` on its side. The sync runs over that connection, as in local mode but with an SSH hop. No extra port is opened. The host key is pinned. Credentials are hardcoded in `main.go`: user `backup`, host `127.0.0.1`, port `22`, private key at `/etc/restinpieces-backup/backup_ed25519`, host key at `/etc/restinpieces-backup/host_key`. The host is a placeholder for local testing.
 
 ### Local mode for testing (`-l` / `--local`)
 
@@ -131,26 +135,30 @@ go build -o local-copy ./cmd/local-copy/daemon
 
 ### Configuration
 
-The daemon reads a TOML file (default `/etc/restinpieces-backup/local-copy.toml`, override with `-config <path>`). Each database is one `[files.<key>]` section; `<key>` is a name you choose, for example `app_db`:
+The daemon reads a TOML file (default `/etc/restinpieces-backup/local-copy.toml`, override with `-config <path>`). Each database is one `[online.<key>]` or `[vacuum.<key>]` section; `<key>` is a label you choose, for example `app-online`:
 
 ```toml
-[files.app_db]
+[online.app-online]
 source_path = "/data/app.db"
+dest_path = "/data/backups"
+frequency = "24h"
+
+[vacuum.app-vacuum]
+source_path = "/data/other.db"
 dest_path = "/data/backups"
 frequency = "24h"
 ```
 
 | Field | Description |
 | --- | --- |
-| `source_path` | The database file to back up (required) |
-| `dest_path` | Directory the snapshots go into (required) |
-| `frequency` | How often to back up this database, as a Go duration such as `24h` (required) |
-| `strategy` | `online` (default) copies the live database in small steps; `vacuum` first compacts a private copy, then copies it |
-| `compression` | `true` writes a gzip-compressed `.bck.gz` snapshot; `false` (default) writes a plain `.db` copy |
-| `online_api_pages_per_step` | In online mode, how many pages (SQLite's unit of storage) each step copies (default 100) |
-| `online_api_sleep_interval` | Pause between online steps, as a Go duration (default `10ms`) |
+| `source_path` | Database file to back up |
+| `dest_path` | Directory for snapshots |
+| `frequency` | How often to back up, e.g. `24h` |
+| `compression` | `true` writes `.bck.gz`, `false` writes `.db` (default) |
+| `pages_per_step` | `online` only: pages per step (default 100, 0 uses default) |
+| `sleep_interval` | `online` only: pause between steps (default `10ms`, 0 no throttle) |
 
-At startup every entry is validated — the paths must exist and `frequency` must be positive — and a broken config refuses to start. An entry whose `source_path` or `dest_path` is empty is skipped. Snapshot files are named `<key>-<name>-<timestamp>.db` (or `.bck.gz` when compressed); the `latest-` link is kept for plain snapshots only.
+At startup every entry is validated — paths must exist and `frequency` must be positive — and a broken config refuses to start. An empty `source_path` or `dest_path` skips that entry. Snapshots are named `<label>-<basename>-<timestamp>.db` (or `.bck.gz`); the `latest-` link exists only for plain snapshots.
 
 ### Backup cadence
 
