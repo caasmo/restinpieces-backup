@@ -23,10 +23,11 @@ import (
 // and their entry types). Users who do not want to import restinpieces
 // can copy those structs here and use them locally.
 //
-// There is no validation in the standalone path: the daemon only
-// checks that at least one sqlite-rsync entry is configured. Users
-// who want validation can copy config.ValidateBackup from restinpieces
-// here and call it after unmarshal.
+// Validation is minimal in the standalone path: readConfig requires a
+// listen_addr (the daemon must not guess where to bind) and the
+// library validates paths and WAL mode at sync time. Users who want
+// the full config validation can copy config.ValidateBackup from
+// restinpieces here and call it after unmarshal.
 type originCfg struct {
 	Backup config.Backup `toml:"backup"`
 }
@@ -38,7 +39,8 @@ func (c originCfg) BackupSqliteRsync() config.BackupSqliteRsync {
 // readConfig loads the configuration from a TOML file whose [backup]
 // section has the application configuration shape — the same document
 // ripc scaffolds for app mode. Paths and WAL mode are validated by the
-// library at sync time, not at boot.
+// library at sync time, not at boot. An empty listen_addr is a
+// configuration error: the daemon must not guess where to bind.
 func readConfig(path string) (originCfg, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -47,6 +49,9 @@ func readConfig(path string) (originCfg, error) {
 	var cfg originCfg
 	if err := toml.Unmarshal(content, &cfg); err != nil {
 		return originCfg{}, fmt.Errorf("failed to parse config file: %w", err)
+	}
+	if cfg.Backup.SqliteRsync.ListenAddr == "" {
+		return originCfg{}, fmt.Errorf("backup.sqlite-rsync.listen_addr is required")
 	}
 	return cfg, nil
 }

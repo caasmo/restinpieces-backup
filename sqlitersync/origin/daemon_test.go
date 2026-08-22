@@ -41,14 +41,13 @@ func createWalDB(t *testing.T, path string) {
 	}
 }
 
-// TestOriginDaemonServe runs a full sync against the daemon over TCP:
-// the test dials the listener, sends the database label, and plays the
-// replica role. The replica database must end up holding the origin's
-// content.
+// TestOriginDaemonServe runs a full sync against the daemon over a
+// net.Pipe: the test plays the replica role on the client side of the
+// Pipe, the handler runs on the server side. The replica database must
+// end up holding the origin's content.
 func TestOriginDaemonServe(t *testing.T) {
 	originPath := filepath.Join(t.TempDir(), "origin.db")
 	createWalDB(t, originPath)
-
 	var pointer atomic.Pointer[config.Config]
 	pointer.Store(&config.Config{
 		Backup: config.Backup{
@@ -60,43 +59,35 @@ func TestOriginDaemonServe(t *testing.T) {
 		},
 	})
 	d := New[config.Config](&pointer, nil)
-	err := d.Run()
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	client, server := net.Pipe()
 	defer func() {
-		_ = d.Stop(context.Background())
+		_ = client.Close()
 	}()
-
-	conn, err := net.Dial("tcp", defaultListenAddr)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer func() {
-		_ = conn.Close()
+	done := make(chan error, 1)
+	go func() {
+		done <- d.handleConn(server)
 	}()
-
-	err = sr.Write(conn, sr.LabelByte, "app_db")
+	err := sr.Write(client, sr.LabelByte, "app_db")
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-
-	// The preamble response: the origin echoes the label to accept the
-	// sync.
-	first, text, err := sr.Read(conn)
+	first, text, err := sr.Read(client)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
 	if first != sr.LabelByte || text != "app_db" {
 		t.Fatalf("preamble accept = %v %q, want label echo", first, text)
 	}
-
 	replicaPath := filepath.Join(t.TempDir(), "replica.db")
-	_, err = sqlitersync.Replica(context.Background(), conn, replicaPath, nil)
+	_, err = sqlitersync.Replica(context.Background(), client, replicaPath, nil)
 	if err != nil {
 		t.Fatalf("Replica: %v", err)
 	}
-
+	_ = client.Close()
+	err = <-done
+	if err != nil {
+		t.Fatalf("handleConn: %v", err)
+	}
 	db, err := sql.Open("sqlite", replicaPath)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -117,9 +108,9 @@ func TestOriginDaemonServe(t *testing.T) {
 // TestOriginDaemonUnknownLabel checks that a label that is not in the
 // configured map is rejected with an error message.
 func TestOriginDaemonUnknownLabel(t *testing.T) {
+	// The path is a placeholder: the handler rejects the label before
+	// ever opening the file, so the file does not need to exist.
 	originPath := filepath.Join(t.TempDir(), "origin.db")
-	createWalDB(t, originPath)
-
 	var pointer atomic.Pointer[config.Config]
 	pointer.Store(&config.Config{
 		Backup: config.Backup{
@@ -131,36 +122,32 @@ func TestOriginDaemonUnknownLabel(t *testing.T) {
 		},
 	})
 	d := New[config.Config](&pointer, nil)
-	err := d.Run()
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	client, server := net.Pipe()
 	defer func() {
-		_ = d.Stop(context.Background())
+		_ = client.Close()
 	}()
-
-	conn, err := net.Dial("tcp", defaultListenAddr)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer func() {
-		_ = conn.Close()
+	done := make(chan error, 1)
+	go func() {
+		done <- d.handleConn(server)
 	}()
-
-	err = sr.Write(conn, sr.LabelByte, "nope")
+	err := sr.Write(client, sr.LabelByte, "nope")
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-
-	first, text, err := sr.Read(conn)
+	first, text, err := sr.Read(client)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
 	if first != sr.ErrorByte {
-		t.Fatalf("first byte = 0x%02x, want error message", first)
+		t.Fatalf("first byte = 0x%02x, want error", first)
 	}
 	if text != "unknown database" {
 		t.Fatalf("error text = %q, want %q", text, "unknown database")
+	}
+	_ = client.Close()
+	err = <-done
+	if err != nil {
+		t.Fatalf("handleConn: %v", err)
 	}
 }
 
@@ -170,14 +157,30 @@ func TestOriginDaemonUnknownLabel(t *testing.T) {
 // report completion while a sync is still in flight. The replica
 // ends the sync by closing the connection, which unblocks the
 // origin's read with EOF and lets Stop complete.
+//
+// The test chooses its own ephemeral port and hands it to the daemon
+// through the real config field: it binds 127.0.0.1:0, reads the
+// assigned address from its own listener, closes that probe listener,
+// and sets listen_addr to that address. Run binds the same address
+// (the kernel grants an immediate rebind), and the test dials it.
+// The daemon owns no address accessor — the test owns the address it
+// dials.
 func TestOriginDaemonStopJoinsSync(t *testing.T) {
 	originPath := filepath.Join(t.TempDir(), "origin.db")
 	createWalDB(t, originPath)
+
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("probe listen: %v", err)
+	}
+	addr := probe.Addr().String()
+	_ = probe.Close()
 
 	var pointer atomic.Pointer[config.Config]
 	pointer.Store(&config.Config{
 		Backup: config.Backup{
 			SqliteRsync: config.BackupSqliteRsync{
+				ListenAddr: addr,
 				Entries: map[string]config.BackupSqliteRsyncEntry{
 					"app_db": {SourcePath: originPath},
 				},
@@ -185,7 +188,7 @@ func TestOriginDaemonStopJoinsSync(t *testing.T) {
 		},
 	})
 	d := New[config.Config](&pointer, nil)
-	err := d.Run()
+	err = d.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -198,7 +201,7 @@ func TestOriginDaemonStopJoinsSync(t *testing.T) {
 		_ = d.Stop(context.Background())
 	}()
 
-	conn, err := net.Dial("tcp", defaultListenAddr)
+	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -254,35 +257,34 @@ func TestOriginDaemonStopJoinsSync(t *testing.T) {
 	}
 }
 
-func TestOriginDaemonEmptyConfigListens(t *testing.T) {
+// TestOriginDaemonEmptyConfigAnswersNoFilesToServe checks that a
+// daemon with no entries answers "no files to serve" before reading
+// the label. The handler never reads the label: a net.Pipe Write
+// would block forever waiting for a read that never comes, so the
+// test reads the error reply directly — the handler's Write unblocks
+// on that read, handleConn returns, and its deferred close ends the
+// handler.
+func TestOriginDaemonEmptyConfigAnswersNoFilesToServe(t *testing.T) {
 	var pointer atomic.Pointer[config.Config]
 	pointer.Store(&config.Config{
 		Backup: config.Backup{},
 	})
 	d := New[config.Config](&pointer, nil)
-	err := d.Run()
-	if err != nil {
-		t.Fatalf("Run with empty config: got %v, want nil (daemon always listens)", err)
-	}
-	defer func() { _ = d.Stop(context.Background()) }()
-	conn, err := net.Dial("tcp", defaultListenAddr)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer func() { _ = conn.Close() }()
-	// Robust: do not assert Write success. With empty config the daemon
-	// answers before reading the label, so Write may race with Close.
-	// The Read below is the contract: it must be "no files to serve".
-	_ = sr.Write(conn, sr.LabelByte, "app-rsync")
-	first, text, err := sr.Read(conn)
+	client, server := net.Pipe()
+	defer func() {
+		_ = client.Close()
+	}()
+	done := make(chan error, 1)
+	go func() {
+		done <- d.handleConn(server)
+	}()
+	first, text, err := sr.Read(client)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
 	if first != sr.ErrorByte || text != "no files to serve" {
 		t.Fatalf("empty config should answer no files to serve, got %v %q", first, text)
 	}
-	// SIGHUP simulation: store a new config with a valid entry and verify the already-listening daemon serves it.
-	originPath := ""
-	// createWalDB would be needed in a real test; here the logical check is that Config() reflects the new pointer.
-	_ = originPath
+	_ = client.Close()
+	<-done
 }

@@ -24,8 +24,6 @@ const labelTimeout = 10 * time.Second
 // entry's SyncTimeout is left at zero.
 const defaultSyncTimeout = 15 * time.Minute
 
-const defaultListenAddr = "127.0.0.1:54321"
-
 type OriginConfig interface {
 	BackupSqliteRsync() config.BackupSqliteRsync
 }
@@ -79,11 +77,7 @@ func (d *OriginDaemon[T]) entries() map[string]config.BackupSqliteRsyncEntry {
 }
 
 func (d *OriginDaemon[T]) listenAddr() string {
-	addr := d.Config().ListenAddr
-	if addr == "" {
-		return defaultListenAddr
-	}
-	return addr
+	return d.Config().ListenAddr
 }
 
 // hasFilesToServe reports whether the daemon has at least one file to serve.
@@ -104,11 +98,12 @@ func (d *OriginDaemon[T]) Start() error {
 // the goroutine closes the listener to unblock Accept, waits for
 // every in-flight sync to finish or abort, then closes ShutdownDone.
 func (d *OriginDaemon[T]) Run() error {
-	listener, err := net.Listen("tcp", d.listenAddr())
+	addr := d.listenAddr()
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("failed to listen on %s: %w", d.listenAddr(), err)
+		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
-	d.Logger.Info("listening", "listen_addr", d.listenAddr())
+	d.Logger.Info("listening", "listen_addr", addr)
 
 	// The errgroup owns one goroutine per accepted connection. No
 	// concurrency cap: the peer is the trusted loopback backup
