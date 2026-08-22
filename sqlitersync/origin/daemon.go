@@ -227,6 +227,13 @@ func (d *OriginDaemon[T]) handleConn(conn net.Conn) (err error) {
 	if !ok {
 		return sr.Write(conn, sr.ErrorByte, "unknown database")
 	}
+	// Accept the preamble: echo the label back. The peer reads this
+	// message and starts the sync protocol only after it; the first
+	// sync byte (ORIGIN_BEGIN) follows this echo.
+	err = sr.Write(conn, sr.LabelByte, label)
+	if err != nil {
+		return err
+	}
 	// The label arrived within the preamble deadline; the sync now runs
 	// under the sync deadline. The origin exits by one of two paths:
 	// the context, checked at every message boundary while the peer
@@ -242,7 +249,7 @@ func (d *OriginDaemon[T]) handleConn(conn net.Conn) (err error) {
 
 	// Stop cancels the daemon context, aborting the sync at its next
 	// message boundary.
-	log := d.Logger.With("label", label, "role", "origin")
+	log := d.Logger.With("label", label)
 	log.Info("starting sync", "origin", fileCfg.SourcePath)
 	start := time.Now()
 	stats, err := sqlitersync.Origin(d.Ctx, conn, fileCfg.SourcePath, nil)

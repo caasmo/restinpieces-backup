@@ -105,13 +105,13 @@ func (d *ReplicaDaemon) sync() {
 // in the library parsing the origin's input cannot take down the
 // daemon. It is the per-database unit of the sync cycle.
 func (d *ReplicaDaemon) syncOne(label, path string) {
-	log := d.Logger.With("label", label, "role", "replica")
+	log := d.Logger.With("label", label, "replica_path", path)
 	defer func() {
 		if r := recover(); r != nil {
 			log.Error("panic during sync", "panic", r, "stack", string(debug.Stack()))
 		}
 	}()
-	log.Info("starting sync", "replica", path)
+	log.Info("requesting sync from origin")
 	start := time.Now()
 	stats, err := d.client.Run(d.Ctx, label, path)
 	if err != nil {

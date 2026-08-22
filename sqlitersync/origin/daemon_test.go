@@ -79,6 +79,16 @@ func TestOriginDaemonServe(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
+	// The preamble response: the origin echoes the label to accept the
+	// sync.
+	first, text, err := sr.Read(conn)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if first != sr.LabelByte || text != "app_db" {
+		t.Fatalf("preamble accept = %v %q, want label echo", first, text)
+	}
+
 	replicaPath := filepath.Join(t.TempDir(), "replica.db")
 	_, err = sqlitersync.Replica(context.Background(), conn, replicaPath, nil)
 	if err != nil {
@@ -194,10 +204,15 @@ func TestOriginDaemonStopJoinsSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	// The origin answers with the ORIGIN_BEGIN header: the type
-	// byte 0x41, the protocol byte, the page size, the page count.
-	// Reading it proves the sync started; the origin is now blocked
-	// reading the replica's first message.
+	// The origin accepts the preamble by echoing the label, then
+	// announces itself with the ORIGIN_BEGIN header: the type byte
+	// 0x41, the protocol byte, the page size, the page count. Reading
+	// both proves the sync started; the origin is now blocked reading
+	// the replica's first message.
+	_, _, err = sr.Read(conn)
+	if err != nil {
+		t.Fatalf("read preamble response: %v", err)
+	}
 	header := make([]byte, 7)
 	_, err = io.ReadFull(conn, header)
 	if err != nil {

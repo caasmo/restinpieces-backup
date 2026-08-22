@@ -23,13 +23,20 @@
 //
 //	0x01 00 00 00 06 61 70 70 5f 64 62
 //
-// The 0x01 and 0x02 bytes never clash with the sync protocol: the first
-// byte the server sends during a sync is always 0x41 (ORIGIN_BEGIN), so
-// the client can tell "accepted" from "rejected" by the first byte it
-// reads back. A sync that cannot start (e.g. a missing origin file) is
-// rejected with the protocol's own ORIGIN_ERROR byte (0x43) before
-// ORIGIN_BEGIN; the client treats any first byte other than 0x41 as a
-// rejection.
+// The preamble is a two-phase handshake, and the sync protocol starts
+// only after the preamble completes:
+//
+// 1. The client writes the label (0x01 plus the database name).
+// 2. The server answers with a preamble response: it echoes the label
+//    (0x01 plus the same name) to accept the sync, or writes an error
+//    (0x02 plus the reason) to reject it and closes the connection.
+//
+// The echo is the acceptance signal. The 0x01 and 0x02 bytes never
+// clash with the sync protocol: after an accepted preamble the origin
+// starts the sync protocol, whose first byte is always 0x41
+// (ORIGIN_BEGIN). The client reads the preamble response itself and
+// starts the sync only after an accepted echo; a rejection is reported
+// with its text.
 package sqlitersync
 
 import (

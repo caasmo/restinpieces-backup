@@ -74,6 +74,12 @@ func startOrigin(t *testing.T, files map[string]string) string {
 			_ = sr.Write(conn, sr.ErrorByte, "unknown database")
 			return
 		}
+		// Accept the preamble by echoing the label, then start the sync
+		// protocol, exactly like the real origin daemon.
+		err = sr.Write(conn, sr.LabelByte, text)
+		if err != nil {
+			return
+		}
 		_, _ = sqlitersync.Origin(context.Background(), conn, path, nil)
 	}()
 	return listener.Addr().String()

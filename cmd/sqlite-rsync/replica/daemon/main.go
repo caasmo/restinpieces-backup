@@ -22,10 +22,10 @@ const (
 	// matches defaultSyncInterval (daemon.go), the fallback used when
 	// the interval is zero; this one is the actual cadence main always
 	// passes.
-	syncInterval = 15 * time.Minute
+	syncInterval = 30 * time.Second
 	// originAddr is the origin server's loopback listener, reachable
 	// directly in local mode and through an SSH channel in SSH mode.
-	originAddr = "127.0.0.1:9909"
+	originAddr = "127.0.0.1:54321"
 )
 
 // readConfig loads the minimal configuration from the environment: the

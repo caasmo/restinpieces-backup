@@ -56,6 +56,19 @@ func runSync(ctx context.Context, conn net.Conn, label, replicaPath string) (sql
 	if err != nil {
 		return sqlitersync.Stats{}, fmt.Errorf("send label: %w", err)
 	}
+
+	// The preamble response decides the sync: an echo of the label
+	// (0x01 plus the same name) accepts it, any other first byte is a
+	// rejection whose text says why. Only an accepted preamble starts
+	// the sync protocol.
+	first, text, err := sr.Read(conn)
+	if err != nil {
+		return sqlitersync.Stats{}, fmt.Errorf("read origin response: %w", err)
+	}
+	if first != sr.LabelByte {
+		return sqlitersync.Stats{}, fmt.Errorf("origin rejected sync: %s", text)
+	}
+
 	// Now run the replica side of the protocol: it sends the hashes of
 	// the replica's pages, receives back only the pages that differ,
 	// and blocks until the sync ends.
