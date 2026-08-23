@@ -135,9 +135,14 @@ type Strategy interface {
 // Engine runs the shared copy pipeline over a strategy's entries.
 // handle is its testable core; daemon.go adds the go-daemon-runner
 // lifecycle.
+//
+// One pool per source file. The pool itself holds no FD; a connection
+// from it does. With SetConnMaxIdleTime the pool frees the FD of
+// idle connections, so no bookkeeping is needed for stale files.
 type Engine struct {
 	logger   *slog.Logger
 	strategy Strategy
+	pools    map[string]*sql.DB
 }
 
 // NewEngine creates the engine around the strategy. A nil logger
@@ -147,7 +152,15 @@ func NewEngine(strategy Strategy, logger *slog.Logger) *Engine {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Engine{strategy: strategy, logger: logger}
+	return &Engine{strategy: strategy, logger: logger, pools: make(map[string]*sql.DB)}
+}
+
+// ClosePools closes all pools. Call on daemon shutdown; each tick
+// only returns the connection, the pool lives on.
+func (e *Engine) ClosePools() {
+	for _, db := range e.pools {
+		_ = db.Close()
+	}
 }
 
 // handle runs one copy over every configured database in turn. A
@@ -224,17 +237,19 @@ func (e *Engine) handle(ctx context.Context, now time.Time) error {
 	return errors.Join(errs...)
 }
 
-// handleFile runs one backup copy for one entry. Opens its own
-// source pool and connection; the defers close them on every return
-// path. The strategy's copy runs via e.strategy.Copy.
+// handleFile runs one backup copy for one entry.
 //
 // No integrity check is performed here. This is a conscious choice:
 // the daemon's job is only to produce a snapshot and atomically
 // promote it; the client on the other machine verifies the file
 // (even before download) and is the single source of truth for
 // validity.
+//
+// One pool per source file, created lazily via poolConn. The pool
+// lives on the engine; the connection holds the FD. With a 10m idle
+// deadline the pool frees the FD when idle, so no bookkeeping.
 func (e *Engine) handleFile(ctx context.Context, entry Entry, backupID string, now time.Time) error {
-	srcDB, srcConn, openErr := createPoolConn(ctx, entry.SourcePath)
+	srcConn, openErr := e.poolConn(ctx, entry.SourcePath)
 	if openErr != nil {
 		return fmt.Errorf("%q: open source db: %w", backupID, openErr)
 	}
@@ -242,10 +257,6 @@ func (e *Engine) handleFile(ctx context.Context, entry Entry, backupID string, n
 		connCloseErr := srcConn.Close()
 		if connCloseErr != nil {
 			e.logger.Error("Error closing source database connection", "error", connCloseErr)
-		}
-		dbCloseErr := srcDB.Close()
-		if dbCloseErr != nil {
-			e.logger.Error("Error closing source database", "error", dbCloseErr)
 		}
 	}()
 
@@ -455,23 +466,28 @@ func sourceDSN(dbPath string) string {
 	return "file:" + url.PathEscape(dbPath) + "?mode=ro&_busy_timeout=5000"
 }
 
-// createPoolConn opens the source file.
-// Each tick, for each file, we create a new pool and one connection
-// from it, use it for the copy, then close both. One pool per file,
-// lives only for that one copy.
-func createPoolConn(ctx context.Context, dbPath string) (*sql.DB, *sql.Conn, error) {
-	db, err := sql.Open("sqlite", sourceDSN(dbPath))
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to open source database: %w", err)
+// poolConn returns a connection from the pool for dbPath.
+// The pool is created lazily once per path and kept on the engine.
+// The connection holds the FD; the pool itself holds none. With
+// SetConnMaxIdleTime the pool frees the FD of idle connections, so
+// no bookkeeping is needed for stale files.
+func (e *Engine) poolConn(ctx context.Context, dbPath string) (*sql.Conn, error) {
+	db := e.pools[dbPath]
+	if db == nil {
+		var err error
+		db, err = sql.Open("sqlite", sourceDSN(dbPath))
+		if err != nil {
+			return nil, fmt.Errorf("failed to open source database: %w", err)
+		}
+		db.SetMaxOpenConns(1)
+		db.SetConnMaxIdleTime(10 * time.Minute)
+		e.pools[dbPath] = db
 	}
-	db.SetMaxOpenConns(1)
-
 	conn, err := db.Conn(ctx)
 	if err != nil {
-		closeErr := db.Close()
-		return nil, nil, errors.Join(fmt.Errorf("failed to open source database: %w", err), closeErr)
+		return nil, fmt.Errorf("failed to open source database: %w", err)
 	}
-	return db, conn, nil
+	return conn, nil
 }
 
 // compressFile reads a source file, compresses it with gzip, and writes to a destination file.

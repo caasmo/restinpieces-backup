@@ -50,6 +50,7 @@ func New(name string, strategy Strategy, logger *slog.Logger) *Daemon {
 func (d *Daemon) Run() error {
 	go func() {
 		defer close(d.ShutdownDone)
+		defer d.Engine.ClosePools()
 
 		// Stop may fire before this goroutine runs; do not run a
 		// doomed first copy. Otherwise run once immediately at
