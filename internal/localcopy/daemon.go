@@ -1,4 +1,4 @@
-package main
+package localcopy
 
 import (
 	"context"
@@ -7,13 +7,11 @@ import (
 	"time"
 
 	"github.com/caasmo/go-daemon-runner/daemon"
-	"github.com/caasmo/restinpieces/config"
 )
 
-// LocalCopyDaemon runs the local copy backup engine on a fixed
-// interval. The first copy runs immediately at startup; subsequent
-// copies follow the interval, which is the smallest configured
-// frequency.
+// Daemon runs the shared backup engine on a fixed interval. The first
+// copy runs immediately at startup; subsequent copies follow the
+// interval, which is the smallest configured frequency.
 //
 // The tick body is synchronous: Run's goroutine performs the copy
 // inline, so only one copy executes at a time. Ticks that fire while
@@ -25,23 +23,23 @@ import (
 // copy goroutine, Stop cancels the daemon context; the copy aborts
 // at the next entry or step boundary (Shutdown semantics), the
 // goroutine exits and signals completion via ShutdownDone. Start wraps
-// Run for the restinpieces server.Daemon contract. It is constructed
-// from a validated config snapshot read at startup; there is no live
-// reload yet.
-type LocalCopyDaemon struct {
+// Run for the restinpieces server.Daemon contract. The strategy reads
+// the config box on every tick, so a configuration reload is visible
+// at the next tick.
+type Daemon struct {
 	daemon.Base
 	*Engine
 }
 
-// New creates the daemon around the already validated config snapshot. A
-// nil logger falls back to slog.Default(). The Engine is embedded: its
-// methods are promoted, so the copy runs d.handle directly.
-func New(cfg *config.Backup, logger *slog.Logger) *LocalCopyDaemon {
-	d := &LocalCopyDaemon{
-		Base: daemon.NewBase("LocalCopyDaemon", logger),
+// New creates the daemon around the strategy. The Engine is embedded:
+// its methods are promoted, so the copy runs d.handle directly. A nil
+// logger falls back to slog.Default().
+func New(name string, strategy Strategy, logger *slog.Logger) *Daemon {
+	d := &Daemon{
+		Base: daemon.NewBase(name, logger),
 	}
 	d.Logger = d.Logger.With("daemon_name", d.Name())
-	d.Engine = NewEngine(cfg, d.Logger)
+	d.Engine = NewEngine(strategy, d.Logger)
 	return d
 }
 
@@ -49,7 +47,7 @@ func New(cfg *config.Backup, logger *slog.Logger) *LocalCopyDaemon {
 // startup (skipped if Stop already fired), then one per tick; Ctx
 // cancellation (from Stop) exits the select and an in-flight copy
 // aborts at the next boundary.
-func (d *LocalCopyDaemon) Run() error {
+func (d *Daemon) Run() error {
 	go func() {
 		defer close(d.ShutdownDone)
 
@@ -90,7 +88,7 @@ func (d *LocalCopyDaemon) Run() error {
 //
 // TODO: remove once restinpieces is on go-daemon-runner; the runner
 // calls Run directly.
-func (d *LocalCopyDaemon) Start() error {
+func (d *Daemon) Start() error {
 	return d.Run()
 }
 
@@ -98,7 +96,7 @@ func (d *LocalCopyDaemon) Start() error {
 // failed copy is logged and the next tick tries again. On shutdown
 // the copy aborts at the next entry or step boundary; an aborted
 // copy is not an error (Shutdown semantics), it is logged as info.
-func (d *LocalCopyDaemon) copy() {
+func (d *Daemon) copy() {
 	err := d.handle(d.Ctx, time.Now())
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -114,22 +112,14 @@ func (d *LocalCopyDaemon) copy() {
 // each entry is checked at least once per its own frequency; entries
 // that are not yet due are skipped by the due check. It returns zero
 // when no entry is active, in which case Run never starts the ticker.
-func (d *LocalCopyDaemon) interval() time.Duration {
+func (d *Daemon) interval() time.Duration {
 	var min time.Duration
-	for _, e := range d.cfg.Online {
-		if e.SourcePath == "" || e.DestPath == "" {
+	for _, entry := range d.strategy.Entries() {
+		if entry.SourcePath == "" || entry.DestPath == "" {
 			continue
 		}
-		if min == 0 || e.Frequency.Duration < min {
-			min = e.Frequency.Duration
-		}
-	}
-	for _, e := range d.cfg.Vacuum {
-		if e.SourcePath == "" || e.DestPath == "" {
-			continue
-		}
-		if min == 0 || e.Frequency.Duration < min {
-			min = e.Frequency.Duration
+		if min == 0 || entry.Frequency < min {
+			min = entry.Frequency
 		}
 	}
 	return min

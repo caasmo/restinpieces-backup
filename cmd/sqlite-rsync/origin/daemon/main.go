@@ -19,7 +19,7 @@ import (
 // BackupSqliteRsync.
 //
 // The section shape lives in restinpieces (config.Backup,
-// config.BackupOnline, config.BackupVacuum, config.BackupSqliteRsync
+// config.BackupOnlineAPI, config.BackupVacuum, config.BackupSqliteRsync
 // and their entry types). Users who do not want to import restinpieces
 // can copy those structs here and use them locally.
 //

@@ -15,7 +15,7 @@ This repository holds the backup tools for a [restinpieces](https://github.com/c
 
 A snapshot is a full copy of a database, frozen at one moment in time. The snapshot tools come in two steps: making a snapshot, then moving it to another machine.
 
-`cmd/local-copy/daemon` makes the snapshots on the machine that runs the databases: it produces a snapshot of each database at a fixed interval and keeps a hard link — a second name for the same file — to the last snapshot.
+`cmd/onlineapi/daemon` and `cmd/vacuum/daemon` make the snapshots on the machine that runs the databases: they produce a snapshot of each database at a fixed interval and keep a hard link — a second name for the same file — to the last snapshot. The onlineapi daemon copies a live database while it is being written (SQLite's Online Backup API); the vacuum daemon produces a clean, defragmented copy (`VACUUM INTO`).
 
 `cmd/rsync/oneshot`, `cmd/rsync/daemon`, and `cmd/sftp/oneshot` move snapshots to a backup machine, so a broken server does not lose its backups. They pull the `latest-*.db` links (or the compressed `.bck.gz` archives) and verify every received database with `PRAGMA integrity_check` — SQLite's built-in check that a database file is not corrupted.
 
@@ -33,24 +33,29 @@ If you need to restore a database to any past moment, not just the latest snapsh
   - [Local mode for testing (`-l` / `--local`)](#local-mode-for-testing--l----local)
   - [Signals](#signals)
   - [Security](#security)
-- [local-copy daemon (`cmd/local-copy/daemon`)](#local-copy-daemon-cmdlocal-copydaemon)
+- [online-api daemon (`cmd/onlineapi/daemon`)](#online-api-daemon-cmdonlineapidaemon)
   - [Build](#build-2)
   - [Configuration](#configuration)
   - [Backup cadence](#backup-cadence)
   - [Signals](#signals-1)
-- [rsync one-shot (`cmd/rsync/oneshot`)](#rsync-one-shot-cmdrsynconeshot)
+- [vacuum daemon (`cmd/vacuum/daemon`)](#vacuum-daemon-cmdvacuumdaemon)
   - [Build](#build-3)
+  - [Configuration](#configuration-1)
+  - [Backup cadence](#backup-cadence-1)
+  - [Signals](#signals-2)
+- [rsync one-shot (`cmd/rsync/oneshot`)](#rsync-one-shot-cmdrsynconeshot)
+  - [Build](#build-4)
   - [Environment variables](#environment-variables-2)
   - [Local mode for testing (`-l` / `--local`)](#local-mode-for-testing--l----local-1)
 - [rsync daemon (`cmd/rsync/daemon`)](#rsync-daemon-cmdrsyncdaemon)
-  - [Build](#build-4)
+  - [Build](#build-5)
   - [Environment variables](#environment-variables-3)
   - [Local mode for testing (`-l` / `--local`)](#local-mode-for-testing--l----local-2)
-  - [Backup cadence](#backup-cadence-1)
-  - [Signals](#signals-2)
+  - [Backup cadence](#backup-cadence-2)
+  - [Signals](#signals-3)
   - [Security](#security-1)
 - [sftp one-shot (`cmd/sftp/oneshot`)](#sftp-one-shot-cmdsftponeshot)
-  - [Build](#build-5)
+  - [Build](#build-6)
 - [Running on a schedule](#running-on-a-schedule)
   - [Cron](#cron)
   - [Systemd timer](#systemd-timer)
@@ -123,27 +128,69 @@ SIGINT, SIGQUIT, and SIGTERM stop the daemon gracefully: the in-flight sync is c
 
 In SSH mode the client loads the SSH keys into memory once at startup, then restricts itself before the first sync: the process may access only the replica directory (read/write) and `/etc` (read-only), so a bug or a malicious origin cannot read or write anything beyond that. The restriction uses the landlock sandbox described in [cmd/rsync/daemon/README.md](cmd/rsync/daemon/README.md). Local mode is the trusted same-machine transport and runs without the restriction.
 
-## local-copy daemon (`cmd/local-copy/daemon`)
+## online-api daemon (`cmd/onlineapi/daemon`)
 
-`cmd/local-copy/daemon` copies the databases on a machine into local backup directories: it produces a snapshot of each database at a fixed interval and updates a hard link to the last snapshot. The rsync and sftp commands use that link as their sync target.
+`cmd/onlineapi/daemon` copies the databases on a machine into local backup directories using SQLite's Online Backup API, so a database that is being written can still be backed up. It produces a snapshot of each database at a fixed interval and updates a hard link to the last snapshot. The rsync and sftp commands use that link as their sync target.
 
 ### Build
 
 ```bash
-go build -o local-copy ./cmd/local-copy/daemon
+go build -o onlineapi ./cmd/onlineapi/daemon
 ```
 
 ### Configuration
 
-The daemon reads a TOML file (default `/etc/restinpieces-backup/local-copy.toml`, override with `-config <path>`). Each database is one `[online.<key>]` or `[vacuum.<key>]` section; `<key>` is a label you choose, for example `app-online`:
+The daemon reads a TOML file (default `/etc/restinpieces-backup/onlineapi.toml`, override with `-config <path>`). It uses the same `[backup]` shape the restinpieces application uses: each database is one `[backup.online.<key>]` section; `<key>` is a label you choose, for example `app-online`:
 
 ```toml
-[online.app-online]
+[backup.online.app-online]
 source_path = "/data/app.db"
 dest_path = "/data/backups"
 frequency = "24h"
+pages_per_step = 100
+sleep_interval = "10ms"
+```
 
-[vacuum.app-vacuum]
+| Field | Description |
+| --- | --- |
+| `source_path` | Database file to back up |
+| `dest_path` | Directory for snapshots |
+| `frequency` | How often to back up, e.g. `24h` |
+| `compression` | `true` writes `.bck.gz`, `false` writes `.db` (default) |
+| `pages_per_step` | Pages per step (default 100, 0 uses default) |
+| `sleep_interval` | Pause between steps (default `10ms`, 0 no throttle) |
+
+At startup every entry is validated — paths must exist and `frequency` must be positive — and a broken config refuses to start. An empty `source_path` or `dest_path` skips that entry. Snapshots are named `<label>-<basename>-<timestamp>.db` (or `.bck.gz`); the `latest-` link exists only for plain snapshots.
+
+The same binary shape is available as a restinpieces application daemon: `cmd/onlineapi/restinpieces` registers the daemon with `srv.AddDaemon` and reads the configuration from the app's current-config box, so a SIGHUP reload is visible at the next tick.
+
+### Backup cadence
+
+- The first backup runs immediately at startup; the next one starts one full interval after the previous one completes.
+- The interval is the smallest `frequency` among the configured entries.
+- Backups run one at a time: a tick that fires while a backup is still running is dropped.
+- A failing backup is logged and retried on the next tick — the daemon never exits on a failure.
+
+### Signals
+
+SIGINT, SIGQUIT, and SIGTERM stop the daemon gracefully: the in-flight backup is cancelled and the process exits. A copy aborted mid-way by the shutdown is not an error — the next backup covers it.
+
+## vacuum daemon (`cmd/vacuum/daemon`)
+
+`cmd/vacuum/daemon` copies the databases on a machine into local backup directories with `VACUUM INTO`, producing a clean, defragmented copy of each database. It produces a snapshot of each database at a fixed interval and updates a hard link to the last snapshot.
+
+### Build
+
+```bash
+go build -o vacuum ./cmd/vacuum/daemon
+```
+
+### Configuration
+
+The daemon reads a TOML file (default `/etc/restinpieces-backup/vacuum.toml`, override with `-config <path>`). It uses the same `[backup]` shape the restinpieces application uses: each database is one `[backup.vacuum.<key>]` section:
+
+```toml
+[backup.vacuum.app-vacuum]
 source_path = "/data/other.db"
 dest_path = "/data/backups"
 frequency = "24h"
@@ -155,10 +202,10 @@ frequency = "24h"
 | `dest_path` | Directory for snapshots |
 | `frequency` | How often to back up, e.g. `24h` |
 | `compression` | `true` writes `.bck.gz`, `false` writes `.db` (default) |
-| `pages_per_step` | `online` only: pages per step (default 100, 0 uses default) |
-| `sleep_interval` | `online` only: pause between steps (default `10ms`, 0 no throttle) |
 
 At startup every entry is validated — paths must exist and `frequency` must be positive — and a broken config refuses to start. An empty `source_path` or `dest_path` skips that entry. Snapshots are named `<label>-<basename>-<timestamp>.db` (or `.bck.gz`); the `latest-` link exists only for plain snapshots.
+
+The same binary shape is available as a restinpieces application daemon: `cmd/vacuum/restinpieces` registers the daemon with `srv.AddDaemon` and reads the configuration from the app's current-config box, so a SIGHUP reload is visible at the next tick.
 
 ### Backup cadence
 

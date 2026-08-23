@@ -1,4 +1,12 @@
-package main
+// Package localcopy provides the shared snapshot engine used by the
+// vacuum and onlineapi daemons. It runs one copy cycle over the
+// strategy's configured entries: check due, verify paths, copy the
+// database through the strategy, atomically promote the result, and
+// refresh the latest hardlink.
+//
+// The package is strategy-agnostic: all differences between the two
+// backup strategies live behind the Strategy interface.
+package localcopy
 
 import (
 	"compress/gzip"
@@ -18,8 +26,7 @@ import (
 	"time"
 
 	"github.com/caasmo/restinpieces/backup"
-	"github.com/caasmo/restinpieces/config"
-	"modernc.org/sqlite"
+	_ "modernc.org/sqlite"
 )
 
 const (
@@ -104,86 +111,59 @@ func parseBackupFile(filename string) (backupFile, error) {
 	}, nil
 }
 
-// dumpFunc performs one backup copy of the source database into
-// destPath. onlineBackup and vacuumInto are the two implementations.
-type dumpFunc func(ctx context.Context, srcConn *sql.Conn, destPath string, entry backupEntry) error
-
-// backupEntry is the engine's view of one configured backup: the
-// fields both strategies share, plus the strategy's dump function.
-// entries() builds one per configured label.
-type backupEntry struct {
-	label         string
-	sourcePath    string
-	destPath      string
-	frequency     time.Duration
-	compression   bool
-	pagesPerStep  int
-	sleepInterval time.Duration
-	dump          dumpFunc
+// Entry is one configured backup in the common shape shared by every
+// strategy. Strategy-specific fields (pages_per_step, sleep_interval)
+// are owned by the Strategy implementation, never by Entry.
+type Entry struct {
+	Label       string
+	SourcePath  string
+	DestPath    string
+	Frequency   time.Duration
+	Compression bool
 }
 
-// Engine runs the local copy backup engine. handle is its testable
-// core; daemon.go adds the go-daemon-runner lifecycle.
+// Strategy is one backup strategy: how to enumerate its configured
+// entries and how to copy one database. VacuumStrategy and
+// OnlineApiStrategy are the two implementations. Entries is called on
+// every tick and reads the config box, so a configuration reload is
+// visible at the next tick.
+type Strategy interface {
+	Entries() []Entry
+	Copy(ctx context.Context, srcConn *sql.Conn, destPath string, entry Entry) error
+}
+
+// Engine runs the shared copy pipeline over a strategy's entries.
+// handle is its testable core; daemon.go adds the go-daemon-runner
+// lifecycle.
 type Engine struct {
-	cfg    *config.Backup
-	logger *slog.Logger
+	logger   *slog.Logger
+	strategy Strategy
 }
 
-// NewEngine creates the engine around the already validated config
-// snapshot. A nil logger falls back to slog.Default(), mirroring the
-// daemon constructors (daemon.NewBase, New).
-func NewEngine(cfg *config.Backup, logger *slog.Logger) *Engine {
+// NewEngine creates the engine around the strategy. A nil logger
+// falls back to slog.Default(), mirroring the daemon constructors
+// (daemon.NewBase, New).
+func NewEngine(strategy Strategy, logger *slog.Logger) *Engine {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Engine{cfg: cfg, logger: logger}
+	return &Engine{strategy: strategy, logger: logger}
 }
 
-// entries returns the engine's view of every configured backup in
-// deterministic order: the online entries by sorted label, then the
-// vacuum entries by sorted label.
-func (e *Engine) entries() []backupEntry {
-	var entries []backupEntry
-	for _, key := range slices.Sorted(maps.Keys(e.cfg.Online)) {
-		f := e.cfg.Online[key]
-		entries = append(entries, backupEntry{
-			label:         key,
-			sourcePath:    f.SourcePath,
-			destPath:      f.DestPath,
-			frequency:     f.Frequency.Duration,
-			compression:   f.Compression,
-			pagesPerStep:  f.PagesPerStep,
-			sleepInterval: f.SleepInterval.Duration,
-			dump:          e.onlineBackup,
-		})
-	}
-	for _, key := range slices.Sorted(maps.Keys(e.cfg.Vacuum)) {
-		f := e.cfg.Vacuum[key]
-		entries = append(entries, backupEntry{
-			label:       key,
-			sourcePath:  f.SourcePath,
-			destPath:    f.DestPath,
-			frequency:   f.Frequency.Duration,
-			compression: f.Compression,
-			dump:        e.vacuumInto,
-		})
-	}
-	return entries
-}
-
-// handle runs one copy over every configured database in turn,
-// online entries first, then vacuum entries. A failed copy is logged
-// and the next entry is tried; errors are returned together.
+// handle runs one copy over every configured database in turn. A
+// failed copy is logged and the next entry is tried; errors are
+// returned together.
 func (e *Engine) handle(ctx context.Context, now time.Time) error {
-	if len(e.cfg.Online)+len(e.cfg.Vacuum) == 0 {
+	entries := e.strategy.Entries()
+	if len(entries) == 0 {
 		e.logger.Info("No backup files configured; backup deactivated.")
 		return nil
 	}
 
-	latest := e.latestBackupFiles(e.cfg)
+	latest := e.latestBackupFiles(entries)
 
 	var errs []error
-	for _, entry := range e.entries() {
+	for _, entry := range entries {
 		// --- step 0: abort on shutdown ---
 		ctxErr := ctx.Err()
 		if ctxErr != nil {
@@ -191,47 +171,47 @@ func (e *Engine) handle(ctx context.Context, now time.Time) error {
 		}
 
 		// --- step 1: skip entries with empty source_path (deactivated) ---
-		if entry.sourcePath == "" {
-			e.logger.Info("Skipping backup; source_path is empty (entry deactivated)", "db", entry.label)
+		if entry.SourcePath == "" {
+			e.logger.Info("Skipping backup; source_path is empty (entry deactivated)", "db", entry.Label)
 			continue
 		}
 
 		// --- step 2: skip entries with empty dest_path (deactivated) ---
-		if entry.destPath == "" {
-			e.logger.Info("Skipping backup; dest_path is empty (entry deactivated)", "db", entry.label)
+		if entry.DestPath == "" {
+			e.logger.Info("Skipping backup; dest_path is empty (entry deactivated)", "db", entry.Label)
 			continue
 		}
 
-		backupID := e.buildBackupID(entry.label, entry.sourcePath)
+		backupID := e.buildBackupID(entry.Label, entry.SourcePath)
 
 		// --- step 3: skip if not yet due ---
-		if !e.isBackupDue(latest[backupID].time, entry.frequency, now) {
+		if !e.isBackupDue(latest[backupID].time, entry.Frequency, now) {
 			e.logger.Info("Skipping backup; not yet due",
 				"db", backupID,
-				"due_at", latest[backupID].time.Add(entry.frequency).Format(timestampFormat),
+				"due_at", latest[backupID].time.Add(entry.Frequency).Format(timestampFormat),
 			)
 			continue
 		}
 
 		// --- step 4: dest_path must be an existing directory ---
-		dirInfo, statErr := os.Stat(entry.destPath)
+		dirInfo, statErr := os.Stat(entry.DestPath)
 		if statErr != nil {
 			errs = append(errs, fmt.Errorf("%q: dest_path: %w", backupID, statErr))
 			continue
 		}
 		if !dirInfo.IsDir() {
-			errs = append(errs, fmt.Errorf("%q: dest_path is not a directory: %s", backupID, entry.destPath))
+			errs = append(errs, fmt.Errorf("%q: dest_path is not a directory: %s", backupID, entry.DestPath))
 			continue
 		}
 
 		// --- step 5: source file must exist and be a file ---
-		srcInfo, srcErr := os.Stat(entry.sourcePath)
+		srcInfo, srcErr := os.Stat(entry.SourcePath)
 		if srcErr != nil {
-			errs = append(errs, fmt.Errorf("%q: source database file not found: %s: %w", backupID, entry.sourcePath, srcErr))
+			errs = append(errs, fmt.Errorf("%q: source database file not found: %s: %w", backupID, entry.SourcePath, srcErr))
 			continue
 		}
 		if srcInfo.IsDir() {
-			errs = append(errs, fmt.Errorf("%q: source path is a directory, not a database file: %s", backupID, entry.sourcePath))
+			errs = append(errs, fmt.Errorf("%q: source path is a directory, not a database file: %s", backupID, entry.SourcePath))
 			continue
 		}
 
@@ -246,11 +226,11 @@ func (e *Engine) handle(ctx context.Context, now time.Time) error {
 
 // handleDbFile runs one backup copy for one entry. Opens its own
 // source pool and connection; the defers close them on every return
-// path. The strategy's dump runs via entry.dump.
-func (e *Engine) handleDbFile(ctx context.Context, entry backupEntry, backupID string, now time.Time) error {
-	backupDir := entry.destPath
+// path. The strategy's copy runs via e.strategy.Copy.
+func (e *Engine) handleDbFile(ctx context.Context, entry Entry, backupID string, now time.Time) error {
+	backupDir := entry.DestPath
 
-	srcDB, srcConn, openErr := openSourceConn(ctx, entry.sourcePath)
+	srcDB, srcConn, openErr := openSourceConn(ctx, entry.SourcePath)
 	if openErr != nil {
 		return fmt.Errorf("%q: open source db: %w", backupID, openErr)
 	}
@@ -268,16 +248,16 @@ func (e *Engine) handleDbFile(ctx context.Context, entry backupEntry, backupID s
 	f := backupFile{
 		backupID:   backupID,
 		time:       now,
-		compressed: entry.compression,
+		compressed: entry.Compression,
 	}
 	finalPath := filepath.Join(backupDir, f.String())
 
-	if entry.compression {
+	if entry.Compression {
 		tempPath := e.buildTempPath(backupID, now)
 		tempFinalPath := finalPath + ".tmp" // same directory, os.Rename is atomic
 
 		// --- 5a: dump to temp ---
-		err := entry.dump(ctx, srcConn, tempPath, entry)
+		err := e.strategy.Copy(ctx, srcConn, tempPath, entry)
 		if err != nil {
 			removeErr := os.Remove(tempPath)
 			if removeErr != nil {
@@ -315,7 +295,7 @@ func (e *Engine) handleDbFile(ctx context.Context, entry backupEntry, backupID s
 	tempFinalPath := finalPath + ".tmp" // same directory, os.Rename is atomic
 
 	// --- 5a: dump to .tmp in backupDir ---
-	err := entry.dump(ctx, srcConn, tempFinalPath, entry)
+	err := e.strategy.Copy(ctx, srcConn, tempFinalPath, entry)
 	if err != nil {
 		removeErr := os.Remove(tempFinalPath)
 		if removeErr != nil {
@@ -368,21 +348,13 @@ func (e *Engine) buildLatestPath(backupDir, dbName string) string {
 // from the configured source files. Errors are logged internally; an
 // empty map is returned when a directory is absent or unreadable (all
 // backups in it are treated as due).
-func (e *Engine) latestBackupFiles(cfg *config.Backup) map[string]backupFile {
+func (e *Engine) latestBackupFiles(entries []Entry) map[string]backupFile {
 	destDirs := make(map[string][]string)
-	for _, key := range slices.Sorted(maps.Keys(cfg.Online)) {
-		f := cfg.Online[key]
-		if f.SourcePath == "" || f.DestPath == "" {
+	for _, entry := range entries {
+		if entry.SourcePath == "" || entry.DestPath == "" {
 			continue // deactivated entry, never backed up
 		}
-		destDirs[f.DestPath] = append(destDirs[f.DestPath], e.buildBackupID(key, f.SourcePath))
-	}
-	for _, key := range slices.Sorted(maps.Keys(cfg.Vacuum)) {
-		f := cfg.Vacuum[key]
-		if f.SourcePath == "" || f.DestPath == "" {
-			continue // deactivated entry, never backed up
-		}
-		destDirs[f.DestPath] = append(destDirs[f.DestPath], e.buildBackupID(key, f.SourcePath))
+		destDirs[entry.DestPath] = append(destDirs[entry.DestPath], e.buildBackupID(entry.Label, entry.SourcePath))
 	}
 	latest := make(map[string]backupFile)
 	for _, dir := range slices.Sorted(maps.Keys(destDirs)) {
@@ -488,171 +460,6 @@ func openSourceConn(ctx context.Context, dbPath string) (*sql.DB, *sql.Conn, err
 	}
 	return db, conn, nil
 }
-
-// vacuumInto creates a clean, defragmented copy of the database.
-func (e *Engine) vacuumInto(ctx context.Context, srcConn *sql.Conn, destPath string, entry backupEntry) error {
-	destPath = strings.ReplaceAll(destPath, "'", "''")
-	_, err := srcConn.ExecContext(ctx, fmt.Sprintf("VACUUM INTO '%s';", destPath))
-	if err != nil {
-		return fmt.Errorf("failed to execute vacuum statement: %w", err)
-	}
-	return nil
-}
-
-// onlineBackup performs a live backup using the SQLite Online Backup
-// API. pages_per_step 0 means "use default": validation allows it and
-// this is where the 100-page default is applied.
-func (e *Engine) onlineBackup(ctx context.Context, srcConn *sql.Conn, destPath string, entry backupEntry) error {
-	pagesPerStep := entry.pagesPerStep
-	if pagesPerStep == 0 {
-		pagesPerStep = config.NewBackupOnlineEntryDefaults().PagesPerStep
-	}
-	sleepInterval := entry.sleepInterval // 0 is valid: no throttling
-
-	backup, err := newBackup(srcConn, destPath)
-	if err != nil {
-		return fmt.Errorf("failed to initialize backup: %w", err)
-	}
-	defer func() {
-		finishErr := backup.Finish()
-		if finishErr != nil {
-			e.logger.Error("error closing backup resource", "error", finishErr)
-		}
-	}()
-
-	// Initialize the progress logger
-	logger, err := newModuloLogger(e.logger, backup)
-	if err != nil {
-		return fmt.Errorf("failed to initialize progress logger: %w", err)
-	}
-	if logger == nil { // This happens if the database is empty
-		e.logger.Info("Source database is empty. Backup completed immediately.")
-		return nil
-	}
-
-	e.logger.Info("Starting online backup copy", "pages_per_step", pagesPerStep, "sleep_interval", sleepInterval, "total_pages", logger.totalPages)
-
-	for {
-		// --- abort on shutdown before each step ---
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		more, err := backup.Step(int32(pagesPerStep))
-		if err != nil {
-			return fmt.Errorf("backup step failed: %w", err)
-		}
-
-		if !more {
-			logger.logFinal(backup)
-			e.logger.Info("Online backup copy completed successfully.")
-			return nil
-		}
-
-		logger.log(backup)
-
-		// The throttle is a select, not a sleep: shutdown cancels the
-		// context and aborts the copy at the next step boundary.
-		if sleepInterval > 0 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(sleepInterval):
-			}
-		}
-	}
-}
-
-// destURI builds the file: URI for a backup destination path. The
-// path is percent-escaped (url.PathEscape): a raw '?' or '#' in
-// destPath would be misread by SQLite's URI parser as query or
-// fragment and silently misdirect the backup. Mirrors sourceDSN on
-// the source side.
-func destURI(destPath string) string {
-	return "file:" + url.PathEscape(destPath)
-}
-
-// newBackup creates the online backup of the source connection into
-// destPath through the modernc driver's Backup API. The destination is
-// opened by the driver as a file: URI (NewBackup opens it via the
-// driver's DSN-parsing path), escaped by destURI.
-func newBackup(srcConn *sql.Conn, destPath string) (*sqlite.Backup, error) {
-	var backup *sqlite.Backup
-	err := srcConn.Raw(func(driverConn any) error {
-		backupAPI, ok := driverConn.(interface {
-			NewBackup(dstUri string) (*sqlite.Backup, error)
-		})
-		if !ok {
-			return fmt.Errorf("driver does not support the online backup API")
-		}
-		var err error
-		backup, err = backupAPI.NewBackup(destURI(destPath))
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	return backup, nil
-}
-
-// --- Modulo Logger ---
-
-// moduloLogger encapsulates the logic for logging backup progress.
-type moduloLogger struct {
-	logger          *slog.Logger
-	totalPages      int
-	logPageInterval int
-	nextLogTarget   int
-}
-
-// newModuloLogger creates and initializes a progress logger.
-func newModuloLogger(logger *slog.Logger, backup *sqlite.Backup) (*moduloLogger, error) {
-	if _, err := backup.Step(0); err != nil {
-		return nil, fmt.Errorf("backup step(0) failed: %w", err)
-	}
-	totalPages := backup.PageCount()
-	if totalPages == 0 {
-		return nil, nil
-	}
-
-	const numLogPoints = 10
-	logPageInterval := totalPages / numLogPoints
-	if logPageInterval == 0 {
-		logPageInterval = 1
-	}
-
-	return &moduloLogger{
-		logger:          logger,
-		totalPages:      totalPages,
-		logPageInterval: logPageInterval,
-		nextLogTarget:   logPageInterval,
-	}, nil
-}
-
-// log checks if the backup has progressed enough to warrant a log message.
-func (m *moduloLogger) log(backup *sqlite.Backup) {
-	copiedPages := m.totalPages - backup.Remaining()
-	if copiedPages >= m.nextLogTarget {
-		m.logProgress(backup)
-		m.nextLogTarget += m.logPageInterval
-	}
-}
-
-// logFinal logs the final progress message.
-func (m *moduloLogger) logFinal(backup *sqlite.Backup) {
-	m.logProgress(backup)
-}
-
-// logProgress is a private helper to format and write the progress log message.
-func (m *moduloLogger) logProgress(backup *sqlite.Backup) {
-	copiedPages := m.totalPages - backup.Remaining()
-	m.logger.Info("Online backup in progress",
-		"pages_copied", copiedPages,
-		"total_pages", m.totalPages,
-	)
-}
-
-// --- Other Helpers ---
 
 // compressFile reads a source file, compresses it with gzip, and writes to a destination file.
 func (e *Engine) compressFile(sourcePath, destPath string) error {
