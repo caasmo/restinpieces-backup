@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/caasmo/restinpieces-backup/config"
-	"github.com/caasmo/restinpieces-backup/sqlitedb"
+	"github.com/caasmo/restinpieces-backup/internal/sqlite"
 	"github.com/caasmo/restinpieces-backup/ssh"
 	"github.com/pkg/sftp"
 	cryptossh "golang.org/x/crypto/ssh"
@@ -170,8 +170,9 @@ func verifyBackup(gzippedBackupPath string) (err error) {
 
 	slog.Info("Decompressed backup for verification", "path", tempDBPath)
 
-	d, err := sqlitedb.New(tempDBPath)
+	d, err := sqlite.New(tempDBPath)
 	if err != nil {
+		slog.Error("Backup verification failed. Failed to open decompressed database.", "path", tempDBPath, "error", err)
 		return fmt.Errorf("failed to open decompressed database: %w", err)
 	}
 	defer func() {
@@ -181,9 +182,11 @@ func verifyBackup(gzippedBackupPath string) (err error) {
 
 	err = d.Integrity()
 	if err != nil {
+		slog.Error("Backup verification failed. Decompressed SQLite database is invalid.", "path", tempDBPath, "error", err)
 		return fmt.Errorf("backup verification failed: %w", err)
 	}
 
+	slog.Info("Backup verification successful. Decompressed SQLite database is valid.", "path", tempDBPath)
 	return nil
 }
 

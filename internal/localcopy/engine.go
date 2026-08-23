@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/caasmo/restinpieces-backup/internal/sqlite"
 	"github.com/caasmo/restinpieces/backup"
 	_ "modernc.org/sqlite"
 )
@@ -228,8 +229,6 @@ func (e *Engine) handle(ctx context.Context, now time.Time) error {
 // source pool and connection; the defers close them on every return
 // path. The strategy's copy runs via e.strategy.Copy.
 func (e *Engine) handleDbFile(ctx context.Context, entry Entry, backupID string, now time.Time) error {
-	backupDir := entry.DestPath
-
 	srcDB, srcConn, openErr := openSourceConn(ctx, entry.SourcePath)
 	if openErr != nil {
 		return fmt.Errorf("%q: open source db: %w", backupID, openErr)
@@ -245,53 +244,76 @@ func (e *Engine) handleDbFile(ctx context.Context, entry Entry, backupID string,
 		}
 	}()
 
+	if entry.Compression {
+		return e.handleCompressed(ctx, entry, backupID, now, srcConn)
+	}
+	return e.handleUncompressed(ctx, entry, backupID, now, srcConn)
+}
+
+func (e *Engine) handleCompressed(ctx context.Context, entry Entry, backupID string, now time.Time, srcConn *sql.Conn) error {
 	f := backupFile{
 		backupID:   backupID,
 		time:       now,
-		compressed: entry.Compression,
+		compressed: true,
 	}
-	finalPath := filepath.Join(backupDir, f.String())
+	finalPath := filepath.Join(entry.DestPath, f.String())
+	tempPath := e.buildTempPath(backupID, now)
+	tempFinalPath := finalPath + ".tmp" // same directory, os.Rename is atomic
 
-	if entry.Compression {
-		tempPath := e.buildTempPath(backupID, now)
-		tempFinalPath := finalPath + ".tmp" // same directory, os.Rename is atomic
-
-		// --- 5a: dump to temp ---
-		err := e.strategy.Copy(ctx, srcConn, tempPath, entry)
-		if err != nil {
-			removeErr := os.Remove(tempPath)
-			if removeErr != nil {
-				e.logger.Error("Failed to remove temp file after failed backup", "path", tempPath, "error", removeErr)
-			}
-			return fmt.Errorf("%q: %w", backupID, err)
-		}
-
-		// --- 5b: compress temp to .tmp in backupDir ---
-		err = e.compressFile(tempPath, tempFinalPath)
+	// --- 5a: dump to temp ---
+	err := e.strategy.Copy(ctx, srcConn, tempPath, entry)
+	if err != nil {
 		removeErr := os.Remove(tempPath)
 		if removeErr != nil {
-			e.logger.Error("Failed to remove temp file", "path", tempPath, "error", removeErr)
+			e.logger.Error("Failed to remove temp file after failed backup", "path", tempPath, "error", removeErr)
 		}
-		if err != nil {
-			removeErr = os.Remove(tempFinalPath)
-			if removeErr != nil {
-				e.logger.Error("Failed to remove partial .tmp file", "path", tempFinalPath, "error", removeErr)
-			}
-			return fmt.Errorf("%q: %w", backupID, err)
-		}
-
-		// --- 5c: atomic promote ---
-		err = os.Rename(tempFinalPath, finalPath)
-		if err != nil {
-			removeErr = os.Remove(tempFinalPath)
-			if removeErr != nil {
-				e.logger.Error("Failed to remove .tmp file after failed rename", "path", tempFinalPath, "error", removeErr)
-			}
-			return fmt.Errorf("%q: %w", backupID, err)
-		}
-		return nil
+		return fmt.Errorf("%q: %w", backupID, err)
 	}
 
+	// --- 5a1: verify temp file integrity before compression ---
+	verifyErr := e.verifyIntegrity(tempPath, backupID)
+	if verifyErr != nil {
+		removeErr := os.Remove(tempPath)
+		if removeErr != nil {
+			e.logger.Error("Failed to remove temp file after failed integrity check", "path", tempPath, "error", removeErr)
+		}
+		return fmt.Errorf("%q: %w", backupID, verifyErr)
+	}
+
+	// --- 5b: compress temp to .tmp in backupDir ---
+	err = e.compressFile(tempPath, tempFinalPath)
+	removeErr := os.Remove(tempPath)
+	if removeErr != nil {
+		e.logger.Error("Failed to remove temp file", "path", tempPath, "error", removeErr)
+	}
+	if err != nil {
+		removeErr = os.Remove(tempFinalPath)
+		if removeErr != nil {
+			e.logger.Error("Failed to remove partial .tmp file", "path", tempFinalPath, "error", removeErr)
+		}
+		return fmt.Errorf("%q: %w", backupID, err)
+	}
+
+	// --- 5c: atomic promote ---
+	err = os.Rename(tempFinalPath, finalPath)
+	if err != nil {
+		removeErr = os.Remove(tempFinalPath)
+		if removeErr != nil {
+			e.logger.Error("Failed to remove .tmp file after failed rename", "path", tempFinalPath, "error", removeErr)
+		}
+		return fmt.Errorf("%q: %w", backupID, err)
+	}
+	return nil
+}
+
+func (e *Engine) handleUncompressed(ctx context.Context, entry Entry, backupID string, now time.Time, srcConn *sql.Conn) error {
+	f := backupFile{
+		backupID:   backupID,
+		time:       now,
+		compressed: false,
+	}
+	finalPath := filepath.Join(entry.DestPath, f.String())
+	backupDir := entry.DestPath
 	tempFinalPath := finalPath + ".tmp" // same directory, os.Rename is atomic
 
 	// --- 5a: dump to .tmp in backupDir ---
@@ -302,6 +324,16 @@ func (e *Engine) handleDbFile(ctx context.Context, entry Entry, backupID string,
 			e.logger.Error("Failed to remove .tmp file after failed backup", "path", tempFinalPath, "error", removeErr)
 		}
 		return fmt.Errorf("%q: %w", backupID, err)
+	}
+
+	// --- 5a1: verify temp file integrity before promote ---
+	verifyErr := e.verifyIntegrity(tempFinalPath, backupID)
+	if verifyErr != nil {
+		removeErr := os.Remove(tempFinalPath)
+		if removeErr != nil {
+			e.logger.Error("Failed to remove .tmp file after failed integrity check", "path", tempFinalPath, "error", removeErr)
+		}
+		return fmt.Errorf("%q: %w", backupID, verifyErr)
 	}
 
 	// --- 5b: atomic promote ---
@@ -418,6 +450,33 @@ func (e *Engine) linkLatest(backupPath, latestPath string) error {
 	return os.Rename(tmp, latestPath)
 }
 
+// verifyIntegrity checks the SQLite file at path with PRAGMA integrity_check.
+// It logs success and failure with backupID and path, and returns the
+// check result. The helper is logger-driven — the sqlite package stays
+// pure and returns errors only.
+func (e *Engine) verifyIntegrity(path string, backupID string) error {
+	db, openErr := sqlite.New(path)
+	if openErr != nil {
+		e.logger.Error("Backup integrity check failed. Failed to open database.", "backupID", backupID, "path", path, "error", openErr)
+		return fmt.Errorf("integrity check open failed: %w", openErr)
+	}
+	integrityErr := db.Integrity()
+	closeErr := db.Close()
+	if integrityErr != nil {
+		e.logger.Error("Backup integrity check failed. Database is invalid.", "backupID", backupID, "path", path, "error", integrityErr)
+		if closeErr != nil {
+			e.logger.Error("Failed to close database after integrity check", "path", path, "error", closeErr)
+		}
+		return integrityErr
+	}
+	if closeErr != nil {
+		e.logger.Error("Backup integrity check failed. Failed to close database.", "backupID", backupID, "path", path, "error", closeErr)
+		return closeErr
+	}
+	e.logger.Info("Backup integrity check passed. Database is valid.", "backupID", backupID, "path", path)
+	return nil
+}
+
 // sourceDSN builds the SQLite file: URI for the source database. The
 // connection is read-only (mode=ro): the engine only reads the source
 // (VACUUM INTO never writes it — "VACUUM (but not VACUUM INTO) is a
@@ -429,7 +488,7 @@ func (e *Engine) linkLatest(backupPath, latestPath string) error {
 // and rewriting it is a side effect a backup tool must not have. The
 // path is percent-escaped (url.PathEscape): a raw '?' or '#' in
 // dbPath would be misread by SQLite's URI parser as query or fragment
-// (this is the sqlitedb convention). For a WAL-mode source, the
+// (this is the sqlite convention). For a WAL-mode source, the
 // read-only open needs the -shm file readable or the source directory
 // writable (wal.html); the daemon runs on the same host as the source,
 // so this holds in the live-writer, clean-close, and leftover -wal

@@ -1,10 +1,10 @@
-// Package sqlitedb provides a read-only handle to a SQLite database file.
+// Package sqlite provides a read-only handle to a SQLite database file.
 //
 // A backup is a SQLite database. The DB type opens one read-only: the
 // mode=ro URI parameter opens the file without ever writing to it, and
 // a missing file fails the open instead of being created. The Integrity
 // method verifies the database with integrity_check.
-package sqlitedb
+package sqlite
 
 import (
 	"database/sql"

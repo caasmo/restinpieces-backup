@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/caasmo/restinpieces-backup/sqlitedb"
+	"github.com/caasmo/restinpieces-backup/internal/sqlite"
 	ripbackup "github.com/caasmo/restinpieces/backup"
 )
 
@@ -48,7 +48,7 @@ func VerifyBackup(destDir string) error {
 			continue
 		}
 
-		d, openErr := sqlitedb.New(localPath)
+		d, openErr := sqlite.New(localPath)
 		if openErr != nil {
 			verifyErrs = append(verifyErrs, fmt.Errorf("backup verification failed post rsync: %w", openErr))
 			continue
@@ -57,10 +57,12 @@ func VerifyBackup(destDir string) error {
 		closeErr := d.Close()
 		if integrityErr != nil {
 			verifyErrs = append(verifyErrs, fmt.Errorf("backup verification failed post rsync: %w", errors.Join(integrityErr, closeErr)))
+			slog.Error("Backup verification failed. Local SQLite database is invalid.", "path", localPath, "error", integrityErr)
 			continue
 		}
 		if closeErr != nil {
 			verifyErrs = append(verifyErrs, fmt.Errorf("backup verification failed post rsync: %w", closeErr))
+			slog.Error("Backup verification failed. Local SQLite database close failed.", "path", localPath, "error", closeErr)
 			continue
 		}
 		slog.Info("Backup verification successful. Local SQLite database is valid.", "path", localPath)
