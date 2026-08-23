@@ -25,7 +25,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/caasmo/restinpieces-backup/internal/sqlite"
 	"github.com/caasmo/restinpieces/backup"
 	_ "modernc.org/sqlite"
 )
@@ -217,7 +216,7 @@ func (e *Engine) handle(ctx context.Context, now time.Time) error {
 		}
 
 		// --- step 6: backup copy ---
-		copyErr := e.handleDbFile(ctx, entry, backupID, now)
+		copyErr := e.handleFile(ctx, entry, backupID, now)
 		if copyErr != nil {
 			errs = append(errs, copyErr)
 		}
@@ -225,11 +224,17 @@ func (e *Engine) handle(ctx context.Context, now time.Time) error {
 	return errors.Join(errs...)
 }
 
-// handleDbFile runs one backup copy for one entry. Opens its own
+// handleFile runs one backup copy for one entry. Opens its own
 // source pool and connection; the defers close them on every return
 // path. The strategy's copy runs via e.strategy.Copy.
-func (e *Engine) handleDbFile(ctx context.Context, entry Entry, backupID string, now time.Time) error {
-	srcDB, srcConn, openErr := openSourceConn(ctx, entry.SourcePath)
+//
+// No integrity check is performed here. This is a conscious choice:
+// the daemon's job is only to produce a snapshot and atomically
+// promote it; the client on the other machine verifies the file
+// (even before download) and is the single source of truth for
+// validity.
+func (e *Engine) handleFile(ctx context.Context, entry Entry, backupID string, now time.Time) error {
+	srcDB, srcConn, openErr := createPoolConn(ctx, entry.SourcePath)
 	if openErr != nil {
 		return fmt.Errorf("%q: open source db: %w", backupID, openErr)
 	}
@@ -268,16 +273,6 @@ func (e *Engine) handleCompressed(ctx context.Context, entry Entry, backupID str
 			e.logger.Error("Failed to remove temp file after failed backup", "path", tempPath, "error", removeErr)
 		}
 		return fmt.Errorf("%q: %w", backupID, err)
-	}
-
-	// --- 5a1: verify temp file integrity before compression ---
-	verifyErr := e.verifyIntegrity(tempPath, backupID)
-	if verifyErr != nil {
-		removeErr := os.Remove(tempPath)
-		if removeErr != nil {
-			e.logger.Error("Failed to remove temp file after failed integrity check", "path", tempPath, "error", removeErr)
-		}
-		return fmt.Errorf("%q: %w", backupID, verifyErr)
 	}
 
 	// --- 5b: compress temp to .tmp in backupDir ---
@@ -324,16 +319,6 @@ func (e *Engine) handleUncompressed(ctx context.Context, entry Entry, backupID s
 			e.logger.Error("Failed to remove .tmp file after failed backup", "path", tempFinalPath, "error", removeErr)
 		}
 		return fmt.Errorf("%q: %w", backupID, err)
-	}
-
-	// --- 5a1: verify temp file integrity before promote ---
-	verifyErr := e.verifyIntegrity(tempFinalPath, backupID)
-	if verifyErr != nil {
-		removeErr := os.Remove(tempFinalPath)
-		if removeErr != nil {
-			e.logger.Error("Failed to remove .tmp file after failed integrity check", "path", tempFinalPath, "error", removeErr)
-		}
-		return fmt.Errorf("%q: %w", backupID, verifyErr)
 	}
 
 	// --- 5b: atomic promote ---
@@ -450,33 +435,6 @@ func (e *Engine) linkLatest(backupPath, latestPath string) error {
 	return os.Rename(tmp, latestPath)
 }
 
-// verifyIntegrity checks the SQLite file at path with PRAGMA integrity_check.
-// It logs success and failure with backupID and path, and returns the
-// check result. The helper is logger-driven — the sqlite package stays
-// pure and returns errors only.
-func (e *Engine) verifyIntegrity(path string, backupID string) error {
-	db, openErr := sqlite.New(path)
-	if openErr != nil {
-		e.logger.Error("Backup integrity check failed. Failed to open database.", "backupID", backupID, "path", path, "error", openErr)
-		return fmt.Errorf("integrity check open failed: %w", openErr)
-	}
-	integrityErr := db.Integrity()
-	closeErr := db.Close()
-	if integrityErr != nil {
-		e.logger.Error("Backup integrity check failed. Database is invalid.", "backupID", backupID, "path", path, "error", integrityErr)
-		if closeErr != nil {
-			e.logger.Error("Failed to close database after integrity check", "path", path, "error", closeErr)
-		}
-		return integrityErr
-	}
-	if closeErr != nil {
-		e.logger.Error("Backup integrity check failed. Failed to close database.", "backupID", backupID, "path", path, "error", closeErr)
-		return closeErr
-	}
-	e.logger.Info("Backup integrity check passed. Database is valid.", "backupID", backupID, "path", path)
-	return nil
-}
-
 // sourceDSN builds the SQLite file: URI for the source database. The
 // connection is read-only (mode=ro): the engine only reads the source
 // (VACUUM INTO never writes it — "VACUUM (but not VACUUM INTO) is a
@@ -497,15 +455,11 @@ func sourceDSN(dbPath string) string {
 	return "file:" + url.PathEscape(dbPath) + "?mode=ro&_busy_timeout=5000"
 }
 
-// openSourceConn opens the source database for backup and returns the
-// pooled handle and one checked-out connection. database/sql's
-// *sql.DB is itself the connection pool — modernc registers the
-// "sqlite" driver, so sql.Open returns the pool, and SetMaxOpenConns(1)
-// pins a single connection for the operations that must run on one
-// connection (VACUUM INTO and the online backup API). The caller holds
-// the checked-out connection for the whole copy and closes both on
-// exit.
-func openSourceConn(ctx context.Context, dbPath string) (*sql.DB, *sql.Conn, error) {
+// createPoolConn opens the source file.
+// Each tick, for each file, we create a new pool and one connection
+// from it, use it for the copy, then close both. One pool per file,
+// lives only for that one copy.
+func createPoolConn(ctx context.Context, dbPath string) (*sql.DB, *sql.Conn, error) {
 	db, err := sql.Open("sqlite", sourceDSN(dbPath))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open source database: %w", err)

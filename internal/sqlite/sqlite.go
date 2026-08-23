@@ -21,18 +21,11 @@ type DB struct {
 	db *sql.DB
 }
 
-// New opens the database file read-only. The mode=ro URI parameter
-// opens without write access: the file is never modified, and a
-// missing database fails the open instead of being created. The path
-// is percent-escaped into the file: URI (url.PathEscape): a raw '?'
-// or '#' in dbPath would be misread by SQLite's URI parser as query
-// or fragment syntax, and mode=ro would silently not apply. Opening a
-// WAL-mode database read-only initializes the WAL infrastructure and
-// leaves two artifacts next to the database (-shm and -wal); both are
-// inert — the connection is read-only and integrity_check never
-// writes — so they never affect the result.
+// New opens the database read-only and immutable.
+// mode=ro prevents writes; immutable=1 prevents -shm/-wal creation.
+// Path is percent-escaped for the file: URI.
 func New(dbPath string) (*DB, error) {
-	conn, err := sql.Open("sqlite", "file:"+url.PathEscape(dbPath)+"?mode=ro")
+	conn, err := sql.Open("sqlite", "file:"+url.PathEscape(dbPath)+"?mode=ro&immutable=1")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
