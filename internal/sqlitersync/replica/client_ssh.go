@@ -1,4 +1,4 @@
-package main
+package replica
 
 import (
 	"context"
@@ -14,8 +14,12 @@ import (
 // origin's loopback listener, and runs the replica side over that
 // channel.
 type SSHClient struct {
-	creds      ssh.Credentials
-	originAddr string
+	// Creds are the in-memory credentials LoadCredentials built once
+	// at startup; every dial reuses the parsed keys.
+	Creds ssh.Credentials
+	// OriginAddr is the origin listener's address, reachable from the
+	// SSH server's host.
+	OriginAddr string
 }
 
 // Compile-time check: SSHClient satisfies Client.
@@ -26,15 +30,17 @@ var _ Client = (*SSHClient)(nil)
 func (c *SSHClient) Run(ctx context.Context, label, replicaPath string) (stats sqlitersync.Stats, err error) {
 	// Dial the machine's system sshd with the in-memory credentials.
 	// The host key is pinned, so a dial against any other server fails.
-	// The ssh package's own 15s timeout bounds the dial itself; the
-	// channel open below is bounded by the AfterFunc close.
-	client, err := ssh.Dial(c.creds)
+	// DialContext bounds the whole connection attempt — TCP dial and
+	// SSH handshake — by ctx (the daemon's sync_timeout), so Stop
+	// aborts an in-flight dial the same way it aborts the channel
+	// open and the sync itself.
+	client, err := ssh.DialContext(ctx, c.Creds)
 	if err != nil {
 		return sqlitersync.Stats{}, err
 	}
 	// Closing the SSH client unblocks the channel open when the
 	// context is cancelled — the same pattern runSync applies to the
-	// channel once it exists.
+	// connection once it exists.
 	stopClose := context.AfterFunc(ctx, func() { _ = client.Close() })
 	defer stopClose()
 	defer func() {
@@ -45,9 +51,9 @@ func (c *SSHClient) Run(ctx context.Context, label, replicaPath string) (stats s
 	// cryptossh.Client.Dial opens a direct-tcpip channel: the channel
 	// is a net.Conn that reaches the origin's loopback listener through
 	// the SSH server.
-	conn, err := client.Dial("tcp", c.originAddr)
+	conn, err := client.Dial("tcp", c.OriginAddr)
 	if err != nil {
-		return sqlitersync.Stats{}, fmt.Errorf("failed to open channel to %s: %w", c.originAddr, err)
+		return sqlitersync.Stats{}, fmt.Errorf("failed to open channel to %s: %w", c.OriginAddr, err)
 	}
 	defer func() {
 		closeErr := conn.Close()

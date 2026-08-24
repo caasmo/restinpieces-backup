@@ -1,4 +1,4 @@
-package main
+package replica
 
 import (
 	"context"
@@ -12,7 +12,8 @@ import (
 // LocalClient syncs against an origin server on the same machine,
 // dialing its loopback listener directly with no SSH.
 type LocalClient struct {
-	originAddr string
+	// OriginAddr is the origin listener's address.
+	OriginAddr string
 }
 
 // Compile-time check: LocalClient satisfies Client.
@@ -24,7 +25,7 @@ func (c *LocalClient) Run(ctx context.Context, label, replicaPath string) (stats
 	// by dialTimeout and aborts it when ctx is cancelled, so an
 	// unreachable server fails the sync quickly and a shutdown does
 	// not wait on a dial in flight.
-	conn, err := (&net.Dialer{Timeout: dialTimeout}).DialContext(ctx, "tcp", c.originAddr)
+	conn, err := (&net.Dialer{Timeout: dialTimeout}).DialContext(ctx, "tcp", c.OriginAddr)
 	if err != nil {
 		return sqlitersync.Stats{}, fmt.Errorf("failed to dial origin: %w", err)
 	}

@@ -79,7 +79,7 @@ func main() {
 }
 
 func setupSftpClient(cfg Config) (*sftp.Client, *cryptossh.Client, error) {
-	creds, err := ssh.LoadCredentials(config.SSHConfig{
+	creds, err := ssh.LoadCredentials(config.SSH{
 		User:           cfg.SSHUser,
 		Host:           cfg.SSHHost,
 		Port:           cfg.SSHPort,

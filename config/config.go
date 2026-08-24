@@ -20,23 +20,23 @@ type Config struct {
 	// to.
 	DestDir string
 	// SSH holds the SSH connection configuration.
-	SSH SSHConfig
+	SSH SSH
 	// RsyncDaemon holds the rsync-daemon-specific settings.
 	RsyncDaemon RsyncDaemonConfig
 }
 
-// SSHConfig holds the parameters needed to establish an SSH connection.
-type SSHConfig struct {
+// SSH holds the parameters needed to establish an SSH connection.
+type SSH struct {
 	// User is the SSH login name.
-	User string
+	User string `toml:"user"`
 	// Host is the server's hostname or IP address.
-	Host string
-	// Port is the server's SSH port; defaults to "22".
-	Port string
+	Host string `toml:"host"`
+	// Port is the server's SSH port.
+	Port string `toml:"port"`
 	// PrivateKeyPath is the path of the client's private key file.
-	PrivateKeyPath string
+	PrivateKeyPath string `toml:"private_key_path"`
 	// HostKeyPath is the path of the server's public host key file.
-	HostKeyPath string
+	HostKeyPath string `toml:"host_key_path"`
 }
 
 // RsyncDaemonConfig holds the rsync-daemon-specific settings.
@@ -56,7 +56,7 @@ func New() (Config, error) {
 	cfg := Config{
 		SourceDir: os.Getenv("RIP_BCK_SOURCE_DIR"),
 		DestDir:   os.Getenv("RIP_BCK_DEST_DIR"),
-		SSH: SSHConfig{
+		SSH: SSH{
 			User:           os.Getenv("RIP_BCK_SSH_USER"),
 			Host:           os.Getenv("RIP_BCK_SSH_HOST"),
 			Port:           os.Getenv("RIP_BCK_SSH_PORT"),

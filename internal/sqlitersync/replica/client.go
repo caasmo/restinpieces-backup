@@ -1,4 +1,10 @@
-package main
+// Package replica provides the transports the replica daemon
+// uses to reach the origin server: dialing the origin's loopback
+// listener directly when both run on the same machine (LocalClient),
+// or opening a direct-tcpip channel through the remote machine's
+// system sshd (SSHClient). The transports differ only in how they
+// produce the connection; the sync itself is the same for both.
+package replica
 
 import (
 	"context"
@@ -14,12 +20,6 @@ import (
 // must not hold the sync loop open.
 const dialTimeout = 10 * time.Second
 
-// defaultSyncTimeout is the longest one sync runs. A sync that takes
-// longer is aborted, releasing the connection. It bounds one sync,
-// not the cadence — the cadence is the daemon's interval
-// (defaultSyncInterval, daemon.go).
-const defaultSyncTimeout = 15 * time.Minute
-
 // Client runs one replica sync of one database against the origin
 // server: connect, send the database label, run the replica side of
 // the protocol over the connection, close.
@@ -34,18 +34,12 @@ type Client interface {
 }
 
 // runSync sends the label and runs the replica side of the sync over
-// the connection, under the sync deadline. The transports differ only
-// in how they produce the connection; the sync itself is the same for
-// both, so the two Run methods share this tail.
+// the connection. The caller owns the sync deadline: the daemon
+// applies the configured sync_timeout to its context before calling.
+// Closing the connection unblocks any blocked read or write in the
+// sync — a property of net.Conn itself, not of the library. The stop
+// function disarms the callback on the normal path.
 func runSync(ctx context.Context, conn net.Conn, label, replicaPath string) (sqlitersync.Stats, error) {
-	// One context carries both the sync deadline and the caller's
-	// cancellation; the connection is made to respect it.
-	ctx, cancel := context.WithTimeout(ctx, defaultSyncTimeout)
-	defer cancel()
-
-	// Closing the connection unblocks any blocked read or write in
-	// the sync — a property of net.Conn itself, not of the library.
-	// The stop function disarms the callback on the normal path.
 	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stopClose()
 

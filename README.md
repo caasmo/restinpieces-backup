@@ -85,7 +85,7 @@ sync_timeout = "15m"
 
 ## sqlite3-rsync client (`cmd/sqlite-rsync/replica/daemon`)
 
-The client is an always-on daemon that copies the origin's database to a replica. On each interval it connects to the origin server and brings the replica database up to the origin's content. Two ways to connect: over SSH (the default), or directly on the same machine with `-l`/`--local`.
+The client is an always-on daemon that pulls the origin's databases to local replica files. Every `[entries.<name>]` entry names a database the origin serves, the local file the replica writes, and how often to pull it. Two ways to connect: over SSH (the default), or directly on the same machine with `-l`/`--local`.
 
 ### Build
 
@@ -93,18 +93,33 @@ The client is an always-on daemon that copies the origin's database to a replica
 go build -o sqlite-rsync-client ./cmd/sqlite-rsync/replica/daemon
 ```
 
-### Environment variables
+### Configuration
 
-| Variable | Required | Description |
-| --- | --- | --- |
-| `RIP_BCK_REPLICA_LABEL` | yes | The name both sides use for the database (the origin serves `db` for now); the replica lives at `<dir>/<label>.db` |
-| `RIP_BCK_REPLICA_DIR` | yes | Local directory the replica database is written into (created if missing) |
+The daemon reads one TOML document given by `-config`; the document root is the replica configuration. `origin_addr` is the dial target of the origin listener. `sync_timeout` caps every single pull and is required. The optional `[ssh]` block selects the SSH transport; leaving it out requires `-l`/`--local`, and when present its `port` is required. Each `[entries.<name>]` entry pulls the named database into `path` every `frequency`; a zero frequency disables the entry. The parent directory of every configured path is created at startup if missing.
 
-Everything else is hardcoded: origin address (`127.0.0.1:54321`), sync interval (15m), and SSH credentials — see [SSH mode](#ssh-mode-the-default). Edit `main.go`, rebuild, run.
+```toml
+origin_addr = "127.0.0.1:54321"
+sync_timeout = "15m"
+
+[ssh]
+user = "backup"
+host = "127.0.0.1"
+port = "22"
+private_key_path = "/etc/restinpieces-backup/backup_ed25519"
+host_key_path = "/etc/restinpieces-backup/host_key"
+
+[entries.logs]
+frequency = "30s"
+path = "/var/backups/logs.db"
+
+[entries.app]
+frequency = "15m"
+path = "/var/backups/app.db"
+```
 
 ### SSH mode (the default)
 
-The default transport reaches the origin over SSH. The origin listens on `127.0.0.1:54321`. Each sync connects to the origin machine's sshd, authenticates, and asks sshd to open `127.0.0.1:54321` on its side. The sync runs over that connection, as in local mode but with an SSH hop. No extra port is opened. The host key is pinned. Credentials are hardcoded in `main.go`: user `backup`, host `127.0.0.1`, port `22`, private key at `/etc/restinpieces-backup/backup_ed25519`, host key at `/etc/restinpieces-backup/host_key`. The host is a placeholder for local testing.
+The default transport reaches the origin over SSH. The origin listens on `127.0.0.1:54321`. Each sync connects to the origin machine's sshd, authenticates, and asks sshd to open `127.0.0.1:54321` on its side. The sync runs over that connection, as in local mode but with an SSH hop. No extra port is opened. The host key is pinned. The credentials come from the `[ssh]` block; the keys load into memory once at startup and are reused on every dial.
 
 ### Local mode for testing (`-l` / `--local`)
 
@@ -117,7 +132,7 @@ The default transport reaches the origin over SSH. The origin listens on `127.0.
 
 ```bash
 # Terminal 2 — client in local mode
-RIP_BCK_REPLICA_LABEL=db RIP_BCK_REPLICA_DIR=/tmp/replica ./sqlite-rsync-client -l
+./sqlite-rsync-client -config /path/to/replica.toml -l
 ```
 
 ### Signals
@@ -126,7 +141,7 @@ SIGINT, SIGQUIT, and SIGTERM stop the daemon gracefully: the in-flight sync is c
 
 ### Security
 
-In SSH mode the client loads the SSH keys into memory once at startup, then restricts itself before the first sync: the process may access only the replica directory (read/write) and `/etc` (read-only), so a bug or a malicious origin cannot read or write anything beyond that. The restriction uses the landlock sandbox described in [cmd/rsync/daemon/README.md](cmd/rsync/daemon/README.md). Local mode is the trusted same-machine transport and runs without the restriction.
+In SSH mode the client loads the SSH keys into memory once at startup. It runs without filesystem confinement by design: the sqlite-rsync protocol is label-addressed — no filesystem path crosses the wire — and each sync applies the received stream to exactly one pre-configured replica file, so a bug or a malicious origin cannot steer reads or writes anywhere else. The full rationale lives in [AGENTS.md](AGENTS.md). Local mode is the trusted same-machine transport.
 
 ## online-api daemon (`cmd/onlineapi/daemon`)
 

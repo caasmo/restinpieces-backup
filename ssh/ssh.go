@@ -4,9 +4,11 @@
 package ssh
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -35,7 +37,7 @@ type Credentials struct {
 
 // LoadCredentials reads the private and host key files once, parses
 // them, and returns the in-memory credentials used by Dial.
-func LoadCredentials(cfg config.SSHConfig) (Credentials, error) {
+func LoadCredentials(cfg config.SSH) (Credentials, error) {
 	key, err := os.ReadFile(cfg.PrivateKeyPath)
 	if err != nil {
 		return Credentials{}, fmt.Errorf("unable to read private key: %w", err)
@@ -66,26 +68,48 @@ func LoadCredentials(cfg config.SSHConfig) (Credentials, error) {
 }
 
 // Dial authenticates with the in-memory credentials and returns an SSH
-// client. The host key is pinned: LoadCredentials validated the host
-// key file (provisioned out-of-band), and a dial against any other host
-// key fails.
+// client. Kept exactly as-is for existing callers (cmd/rsync/*,
+// cmd/sftp/oneshot).
 func Dial(creds Credentials) (*cryptossh.Client, error) {
 	sshConfig := &cryptossh.ClientConfig{
 		User: creds.User,
-		Auth: []cryptossh.AuthMethod{
-			cryptossh.PublicKeys(creds.signer),
-		},
+		Auth: []cryptossh.AuthMethod{cryptossh.PublicKeys(creds.signer)},
 		HostKeyCallback: cryptossh.FixedHostKey(creds.hostKey),
 		Timeout:         15 * time.Second,
 	}
-
-	addr := fmt.Sprintf("%s:%s", creds.Host, creds.Port)
+	addr := net.JoinHostPort(creds.Host, creds.Port)
 	client, err := cryptossh.Dial("tcp", addr, sshConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial ssh: %w", err)
 	}
-
 	return client, nil
+}
+
+// DialContext behaves like Dial, but ctx bounds the whole connection
+// attempt — the TCP dial and the SSH handshake — not just the TCP
+// dial. Cancelling ctx unblocks a stuck handshake the same way
+// closing the connection does after Dial returns. No Timeout field:
+// ctx (the daemon's sync_timeout) owns the deadline end-to-end.
+func DialContext(ctx context.Context, creds Credentials) (*cryptossh.Client, error) {
+	sshConfig := &cryptossh.ClientConfig{
+		User: creds.User,
+		Auth: []cryptossh.AuthMethod{cryptossh.PublicKeys(creds.signer)},
+		HostKeyCallback: cryptossh.FixedHostKey(creds.hostKey),
+	}
+	addr := net.JoinHostPort(creds.Host, creds.Port)
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to dial ssh: %w", err)
+	}
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
+
+	clientConn, chans, reqs, err := cryptossh.NewClientConn(conn, addr, sshConfig)
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("ssh handshake: %w", err)
+	}
+	return cryptossh.NewClient(clientConn, chans, reqs), nil
 }
 
 // Session is an SSH session running a remote command, with its stdin
