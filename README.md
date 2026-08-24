@@ -13,6 +13,8 @@ This repository holds the backup tools for a [restinpieces](https://github.com/c
 
 It implements the three standard SQLite backup methods: the [Online Backup API](https://www.sqlite.org/backup.html) ([`cmd/onlineapi`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/onlineapi)) and [`VACUUM INTO`](https://www.sqlite.org/lang_vacuum.html) ([`cmd/vacuum`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/vacuum)) for local backups on the same machine, and the [sqlite3_rsync](https://github.com/caasmo/go-sqlite-rsync) protocol ([`cmd/sqlite-rsync`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/sqlite-rsync)) for remote backups to another machine.
 
+It also provides pure Go rsync and sftp clients ([`cmd/rsync`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/rsync) and [`cmd/sftp`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/sftp)). They are meant to sync the local backups the online API and VACUUM methods make. Do not use them for live databases.
+
 For point-in-time restores and syncing to S3 and other object stores, see [restinpieces-litestream](https://github.com/caasmo/restinpieces-litestream).
 
 # Content
@@ -42,20 +44,17 @@ For point-in-time restores and syncing to S3 and other object stores, see [resti
 - [rsync (`cmd/rsync`)](#rsync-cmdrsync)
   - [rsync one-shot (`cmd/rsync/oneshot`)](#rsync-one-shot-cmdrsynconeshot)
     - [Build](#build-4)
-    - [Environment variables](#environment-variables)
     - [Local mode for testing (`-l` / `--local`)](#local-mode-for-testing--l----local-1)
   - [rsync daemon (`cmd/rsync/daemon`)](#rsync-daemon-cmdrsyncdaemon)
     - [Build](#build-5)
-    - [Environment variables](#environment-variables-1)
     - [Local mode for testing (`-l` / `--local`)](#local-mode-for-testing--l----local-2)
-    - [Backup cadence](#backup-cadence)
-    - [Signals](#signals-1)
     - [Security](#security-1)
-  - [sftp one-shot (`cmd/sftp/oneshot`)](#sftp-one-shot-cmdsftponeshot)
-    - [Build](#build-6)
   - [Running on a schedule](#running-on-a-schedule)
     - [Cron](#cron)
     - [Systemd timer](#systemd-timer)
+- [sftp (`cmd/sftp`)](#sftp-cmdsftp)
+  - [sftp one-shot (`cmd/sftp/oneshot`)](#sftp-one-shot-cmdsftponeshot)
+    - [Build](#build-6)
 
 ## sqlite3-rsync (`cmd/sqlite-rsync`)
 
@@ -253,9 +252,15 @@ frequency = "24h"
 
 ## rsync (`cmd/rsync`)
 
+A pure Go rsync client. It pulls the local backups the online API and VACUUM methods make. Do not use it for live databases.
+
 ### rsync one-shot (`cmd/rsync/oneshot`)
 
-The rsync client runs as the receiver: it starts the `rsync` binary in server (sender) mode — over SSH, or locally on the same machine with `-l` — and pulls every `latest-*.db` file (the hard links the local-copy daemon keeps) into a local destination directory. Files are written atomically (temp file + rename), and every received database must pass `PRAGMA integrity_check`.
+A one-shot run. A script to be used alongside a scheduler like cron or a systemd timer.
+
+It starts the `rsync` binary in server (sender) mode — over SSH, or locally on the same machine with `-l` — and pulls every `latest-*.db` file (the hard links the local-copy daemon keeps) into a local destination directory.
+
+Files are written atomically (temp file + rename), and every received database must pass `PRAGMA integrity_check`.
 
 #### Build
 
@@ -264,20 +269,6 @@ go build -o backup-client ./cmd/rsync/oneshot
 ```
 
 The machine that runs the rsync server side (the remote host in SSH mode, the local machine in local mode) must have an rsync-compatible binary in PATH.
-
-#### Environment variables
-
-| Variable | Required | Description |
-| --- | --- | --- |
-| `RIP_BCK_SOURCE_DIR` | yes | Backup directory on the server containing the `latest-*.db` hard links. In SSH mode the directory is shell-quoted on the remote command; only the `latest-*.db` glob is expanded by the remote shell |
-| `RIP_BCK_DEST_DIR` | yes | Local directory the files are pulled into (created if missing) |
-| `RIP_BCK_SSH_USER` | yes* | SSH user |
-| `RIP_BCK_SSH_HOST` | yes* | SSH host |
-| `RIP_BCK_SSH_PORT` | no | SSH port (default `22`) |
-| `RIP_BCK_SSH_PRIVATE_KEY_PATH` | yes* | Path to the SSH private key used for authentication |
-| `RIP_BCK_SSH_HOST_KEY_PATH` | yes* | Path to the server's public host key; the host key is pinned, so a dial against any other key fails |
-
-\* Only required in SSH mode (the default). Local mode needs only `RIP_BCK_SOURCE_DIR` and `RIP_BCK_DEST_DIR`.
 
 #### Local mode for testing (`-l` / `--local`)
 
@@ -301,58 +292,17 @@ go build -o backup-daemon ./cmd/rsync/daemon
 
 The machine that runs the rsync server side (the remote host in SSH mode, the local machine in local mode) must have an rsync-compatible binary in PATH.
 
-#### Environment variables
-
-| Variable | Required | Description |
-| --- | --- | --- |
-| `RIP_BCK_SOURCE_DIR` | yes | Backup directory on the server containing the `latest-*.db` hard links |
-| `RIP_BCK_DEST_DIR` | yes | Local directory the files are pulled into (created if missing) |
-| `RIP_BCK_INTERVAL` | yes | How often to run a backup, as a Go duration string (e.g. `5m`, `1h`); must be positive |
-| `RIP_BCK_SSH_USER` | yes* | SSH user |
-| `RIP_BCK_SSH_HOST` | yes* | SSH host |
-| `RIP_BCK_SSH_PORT` | no | SSH port (default `22`) |
-| `RIP_BCK_SSH_PRIVATE_KEY_PATH` | yes* | Path to the SSH private key used for authentication |
-| `RIP_BCK_SSH_HOST_KEY_PATH` | yes* | Path to the server's public host key; the host key is pinned, so a dial against any other key fails |
-
-\* Only required in SSH mode (the default). Local mode needs only `RIP_BCK_SOURCE_DIR`, `RIP_BCK_DEST_DIR`, and `RIP_BCK_INTERVAL`.
-
 #### Local mode for testing (`-l` / `--local`)
 
-`-l` runs the whole pipeline without SSH: the client starts the local `rsync` binary in server mode on the same machine and pulls from a local `RIP_BCK_SOURCE_DIR`. This is how to test the whole pipeline without a remote machine: run it on the server itself (where the backup directory with the `latest-*.db` hard links already lives) or on any machine that has a copy of the source directory and an `rsync` binary in PATH:
+Same as the [rsync one-shot](#rsync-one-shot-cmdrsynconeshot) local mode, but running the daemon:
 
 ```bash
 RIP_BCK_SOURCE_DIR=/var/backups RIP_BCK_DEST_DIR=./backups RIP_BCK_INTERVAL=5m ./backup-daemon -l
 ```
 
-Ctrl-C stops the daemon gracefully. In local mode the source glob is expanded by the client itself (there is no shell in between), so zero matches fail before the transfer starts with `no backup files received: server glob matched nothing`.
-
-#### Backup cadence
-
-- The first backup runs immediately at startup; the next one starts one full interval after the previous backup completes.
-- Backups run one at a time: a tick that fires while a backup is still running is dropped, so at most one backup per interval is guaranteed.
-- At least one backup per interval is *not* guaranteed: when a transfer takes longer than the interval (e.g. a 12-minute transfer with a 5-minute interval), backups run back-to-back and the intended cadence is lost. Set the interval so a single backup finishes comfortably within it.
-- A failing backup (transfer or verification) is logged and the next tick retries — the daemon never exits on a failure.
-- The destination directory is created at startup and re-created by the receiver on every run, so a mid-run removal self-heals on the next tick.
-
-#### Signals
-
-SIGINT, SIGQUIT, and SIGTERM stop the daemon gracefully: the in-flight transfer is cancelled and the process has up to 15 seconds to exit; a verification scan that is already running is allowed to finish within that time.
-
 #### Security
 
 The daemon's security is documented in [cmd/rsync/daemon/README.md](cmd/rsync/daemon/README.md): the landlock sandbox and the threat it addresses, the in-memory SSH keys, and the optional systemd hardening.
-
-### sftp one-shot (`cmd/sftp/oneshot`)
-
-The SFTP client connects to the server with a pinned host key, opens an SFTP session, lists the remote backup directory, picks the most recent snapshot by filename (names carry a timestamp, so sorting the names finds the latest), downloads it, decompresses the `.bck.gz` archive, and verifies the resulting database with `PRAGMA integrity_check`.
-
-#### Build
-
-```bash
-go build -o sftp-client ./cmd/sftp/oneshot
-```
-
-The connection parameters and directories are hardcoded in the `Config` struct at the top of `main()` (`SSHUser`, `SSHHost`, `SSHPort`, `SSHPrivateKeyPath`, `SSHHostKeyPath`, `RemoteBackupDir`, `LocalBackupDir`) — edit them, rebuild, and run.
 
 ### Running on a schedule
 
@@ -409,3 +359,21 @@ WantedBy=timers.target
 ```bash
 systemctl enable --now backup-client.timer
 ```
+
+## sftp (`cmd/sftp`)
+
+A pure Go sftp client. It pulls the local backups the online API and VACUUM methods make. Do not use it for live databases.
+
+### sftp one-shot (`cmd/sftp/oneshot`)
+
+A one-shot run. A script to be used alongside a scheduler like cron or a systemd timer.
+
+It connects to the server with a pinned host key, opens an SFTP session, lists the remote backup directory, picks the most recent snapshot by filename (names carry a timestamp, so sorting the names finds the latest), downloads it, decompresses the `.bck.gz` archive, and verifies the resulting database with `PRAGMA integrity_check`.
+
+#### Build
+
+```bash
+go build -o sftp-client ./cmd/sftp/oneshot
+```
+
+The connection parameters and directories are hardcoded in the `Config` struct at the top of `main()` (`SSHUser`, `SSHHost`, `SSHPort`, `SSHPrivateKeyPath`, `SSHHostKeyPath`, `RemoteBackupDir`, `LocalBackupDir`) — edit them, rebuild, and run.
