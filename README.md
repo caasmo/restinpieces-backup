@@ -15,6 +15,14 @@ It implements the three standard SQLite backup methods: the [Online Backup API](
 
 It also provides pure Go rsync and sftp clients ([`cmd/rsync`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/rsync) and [`cmd/sftp`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/sftp)). They are meant to sync the local backups the online API and VACUUM methods make. Do not use them for live databases.
 
+| Method | Use | Description | Implementation |
+| --- | --- | --- | --- |
+| [sqlite3_rsync](https://github.com/caasmo/go-sqlite-rsync) | remote backup, delta-based | syncs origin to replica, sending only the changed pages | [`cmd/sqlite-rsync`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/sqlite-rsync) |
+| [Online Backup API](https://www.sqlite.org/backup.html) | local backup | copies a live database page-by-page, with throttling | [`cmd/onlineapi`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/onlineapi) |
+| [`VACUUM INTO`](https://www.sqlite.org/lang_vacuum.html) | local backup | writes a clean, defragmented copy of the database | [`cmd/vacuum`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/vacuum) |
+| rsync pull client | remote backup, delta-based | pulls the `latest-*.db` snapshots over SSH | [`cmd/rsync`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/rsync) |
+| sftp pull client | remote backup | pulls the newest snapshot over SFTP | [`cmd/sftp`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/sftp) |
+
 For point-in-time restores and syncing to S3 and other object stores, see [restinpieces-litestream](https://github.com/caasmo/restinpieces-litestream).
 
 # Content
