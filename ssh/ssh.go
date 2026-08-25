@@ -72,10 +72,11 @@ func LoadCredentials(cfg config.SSH) (Credentials, error) {
 // cmd/sftp/oneshot).
 func Dial(creds Credentials) (*cryptossh.Client, error) {
 	sshConfig := &cryptossh.ClientConfig{
-		User: creds.User,
-		Auth: []cryptossh.AuthMethod{cryptossh.PublicKeys(creds.signer)},
-		HostKeyCallback: cryptossh.FixedHostKey(creds.hostKey),
-		Timeout:         15 * time.Second,
+		User:              creds.User,
+		Auth:              []cryptossh.AuthMethod{cryptossh.PublicKeys(creds.signer)},
+		HostKeyCallback:   cryptossh.FixedHostKey(creds.hostKey),
+		HostKeyAlgorithms: []string{creds.hostKey.Type()},
+		Timeout:           15 * time.Second,
 	}
 	addr := net.JoinHostPort(creds.Host, creds.Port)
 	client, err := cryptossh.Dial("tcp", addr, sshConfig)
@@ -92,9 +93,10 @@ func Dial(creds Credentials) (*cryptossh.Client, error) {
 // ctx (the daemon's sync_timeout) owns the deadline end-to-end.
 func DialContext(ctx context.Context, creds Credentials) (*cryptossh.Client, error) {
 	sshConfig := &cryptossh.ClientConfig{
-		User: creds.User,
-		Auth: []cryptossh.AuthMethod{cryptossh.PublicKeys(creds.signer)},
-		HostKeyCallback: cryptossh.FixedHostKey(creds.hostKey),
+		User:              creds.User,
+		Auth:              []cryptossh.AuthMethod{cryptossh.PublicKeys(creds.signer)},
+		HostKeyCallback:   cryptossh.FixedHostKey(creds.hostKey),
+		HostKeyAlgorithms: []string{creds.hostKey.Type()},
 	}
 	addr := net.JoinHostPort(creds.Host, creds.Port)
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
