@@ -88,6 +88,7 @@ func (d *ReplicaDaemon) Run() error {
 		if ctxErr != nil {
 			return // stopped before the first round
 		}
+		d.logLabels()
 		d.sync(time.Now())
 
 		interval := d.interval()
@@ -109,6 +110,19 @@ func (d *ReplicaDaemon) Run() error {
 		}
 	}()
 	return nil
+}
+
+// logLabels logs the label of every active entry the daemon pulls in
+// one line, so startup shows which databases the replica syncs from
+// the origin. Disabled entries (zero frequency) are omitted.
+func (d *ReplicaDaemon) logLabels() {
+	labels := make([]string, 0, len(d.config.Entries))
+	for _, name := range slices.Sorted(maps.Keys(d.config.Entries)) {
+		if d.config.Entries[name].Frequency.Duration > 0 {
+			labels = append(labels, name)
+		}
+	}
+	d.Logger.Info("pulling", "labels", labels)
 }
 
 // sync runs one sync round over every configured entry in turn,

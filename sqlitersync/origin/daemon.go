@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"runtime/debug"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -80,6 +82,18 @@ func (d *OriginDaemon[T]) listenAddr() string {
 	return d.Config().ListenAddr
 }
 
+// logEntries logs the label and source path of every entry the daemon
+// serves in one line, so startup shows which databases a client may
+// request.
+func (d *OriginDaemon[T]) logEntries() {
+	entries := d.entries()
+	attrs := make([]any, 0, len(entries)*2)
+	for _, label := range slices.Sorted(maps.Keys(entries)) {
+		attrs = append(attrs, label, entries[label].SourcePath)
+	}
+	d.Logger.Info("serving", slog.Group("entries", attrs...))
+}
+
 // hasFilesToServe reports whether the daemon has at least one file to serve.
 func (d *OriginDaemon[T]) hasFilesToServe() bool {
 	return len(d.entries()) != 0
@@ -104,6 +118,7 @@ func (d *OriginDaemon[T]) Run() error {
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
 	d.Logger.Info("listening", "listen_addr", addr)
+	d.logEntries()
 
 	// The errgroup owns one goroutine per accepted connection. No
 	// concurrency cap: the peer is the trusted loopback backup
