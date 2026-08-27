@@ -67,17 +67,34 @@ func LoadCredentials(cfg config.SSH) (Credentials, error) {
 	}, nil
 }
 
-// Dial authenticates with the in-memory credentials and returns an SSH
-// client. Kept exactly as-is for existing callers (cmd/rsync/*,
-// cmd/sftp/oneshot).
-func Dial(creds Credentials) (*cryptossh.Client, error) {
+// clientConfig builds the pinned SSH client config from the in-memory
+// credentials. hostKey and signer are required — a dial with a nil
+// hostKey would not be pinned and panics on Type().
+func clientConfig(creds Credentials) (*cryptossh.ClientConfig, error) {
+	if creds.hostKey == nil {
+		return nil, fmt.Errorf("ssh: host key is required")
+	}
+	if creds.signer == nil {
+		return nil, fmt.Errorf("ssh: signer is required")
+	}
 	sshConfig := &cryptossh.ClientConfig{
 		User:              creds.User,
 		Auth:              []cryptossh.AuthMethod{cryptossh.PublicKeys(creds.signer)},
 		HostKeyCallback:   cryptossh.FixedHostKey(creds.hostKey),
 		HostKeyAlgorithms: []string{creds.hostKey.Type()},
-		Timeout:           15 * time.Second,
 	}
+	return sshConfig, nil
+}
+
+// Dial authenticates with the in-memory credentials and returns an SSH
+// client. Kept exactly as-is for existing callers (cmd/rsync/*,
+// cmd/sftp/oneshot).
+func Dial(creds Credentials) (*cryptossh.Client, error) {
+	sshConfig, err := clientConfig(creds)
+	if err != nil {
+		return nil, err
+	}
+	sshConfig.Timeout = 15 * time.Second
 	addr := net.JoinHostPort(creds.Host, creds.Port)
 	client, err := cryptossh.Dial("tcp", addr, sshConfig)
 	if err != nil {
@@ -92,11 +109,9 @@ func Dial(creds Credentials) (*cryptossh.Client, error) {
 // closing the connection does after Dial returns. No Timeout field:
 // ctx (the daemon's sync_timeout) owns the deadline end-to-end.
 func DialContext(ctx context.Context, creds Credentials) (*cryptossh.Client, error) {
-	sshConfig := &cryptossh.ClientConfig{
-		User:              creds.User,
-		Auth:              []cryptossh.AuthMethod{cryptossh.PublicKeys(creds.signer)},
-		HostKeyCallback:   cryptossh.FixedHostKey(creds.hostKey),
-		HostKeyAlgorithms: []string{creds.hostKey.Type()},
+	sshConfig, err := clientConfig(creds)
+	if err != nil {
+		return nil, err
 	}
 	addr := net.JoinHostPort(creds.Host, creds.Port)
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
