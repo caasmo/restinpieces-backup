@@ -1,11 +1,14 @@
 package origin
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"io"
+	"log/slog"
 	"net"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -287,4 +290,38 @@ func TestOriginDaemonEmptyConfigAnswersNoFilesToServe(t *testing.T) {
 	}
 	_ = client.Close()
 	<-done
+}
+
+// TestLogEntries ensures serving logs the label as a top-level
+// attribute (app_db=...), not under the entries group
+// (entries.app_db=...), with multiple labels.
+func TestLogEntries(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	var pointer atomic.Pointer[config.Config]
+	pointer.Store(&config.Config{
+		Backup: config.Backup{
+			SqliteRsync: config.BackupSqliteRsync{
+				Entries: map[string]config.BackupSqliteRsyncEntry{
+					"app_db": {SourcePath: "/home/admin/app.db"},
+					"logs":   {SourcePath: "/var/log/app.db"},
+				},
+			},
+		},
+	})
+	d := New[config.Config](&pointer, logger)
+	d.logEntries()
+	output := buf.String()
+	if !strings.Contains(output, "app_db=/home/admin/app.db") {
+		t.Fatalf("log output missing app_db attribute: %q", output)
+	}
+	if !strings.Contains(output, "logs=/var/log/app.db") {
+		t.Fatalf("log output missing logs attribute: %q", output)
+	}
+	if strings.Contains(output, "entries.app_db") || strings.Contains(output, "entries.logs") {
+		t.Fatalf("log output should not contain entries group prefix: %q", output)
+	}
+	if !strings.Contains(output, "serving") {
+		t.Fatalf("log output missing serving message: %q", output)
+	}
 }

@@ -91,7 +91,7 @@ func (d *OriginDaemon[T]) logEntries() {
 	for _, label := range slices.Sorted(maps.Keys(entries)) {
 		attrs = append(attrs, label, entries[label].SourcePath)
 	}
-	d.Logger.Info("serving", slog.Group("entries", attrs...))
+	d.Logger.Info("serving", attrs...)
 }
 
 // hasFilesToServe reports whether the daemon has at least one file to serve.
