@@ -11,7 +11,7 @@
 
 This repository holds the backup tools for a [restinpieces](https://github.com/caasmo/restinpieces) deployment.
 
-It implements the three standard SQLite backup methods: the [Online Backup API](https://www.sqlite.org/backup.html) ([`cmd/onlineapi`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/onlineapi)) and [`VACUUM INTO`](https://www.sqlite.org/lang_vacuum.html) ([`cmd/vacuum`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/vacuum)) for local backups on the same machine, and the [sqlite3_rsync](https://github.com/caasmo/go-sqlite-rsync) protocol ([`cmd/sqlite-rsync`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/sqlite-rsync)) for remote backups to another machine.
+It implements in pure Go via [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) the three standard SQLite backup methods: the [Online Backup API](https://www.sqlite.org/backup.html) ([`cmd/onlineapi`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/onlineapi)) and [`VACUUM INTO`](https://www.sqlite.org/lang_vacuum.html) ([`cmd/vacuum`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/vacuum)) for local backups on the same machine, and the [sqlite3_rsync](https://github.com/caasmo/go-sqlite-rsync) protocol ([`cmd/sqlite-rsync`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/sqlite-rsync)) for remote backups to another machine.
 
 It also provides pure Go rsync and sftp clients ([`cmd/rsync`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/rsync) and [`cmd/sftp`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/sftp)). They are meant to sync the local backups the online API and VACUUM methods make. Do not use them for live databases.
 
