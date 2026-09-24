@@ -119,7 +119,7 @@ type activeEntry struct {
 func (d *Daemon) activeEntries() []activeEntry {
 	cfg := d.cfgPointer.Load()
 	var entries []activeEntry
-	for label, entry := range cfg.BackupS3Upload() {
+	for label, entry := range cfg.BackupS3() {
 		if entry.BackupLabel == "" {
 			continue
 		}
@@ -234,7 +234,7 @@ func s3ObjectKey(backupPath, ageRecipient string) string {
 func (d *Daemon) uploadOne(ctx context.Context, active activeEntry) error {
 	backupPath, ok := localcopy.LatestBackupPath(active.backupDir, active.backupLabel, active.sourcePath)
 	if !ok {
-		d.Logger.Info("Skipping upload; no backup yet", "s3_upload", active.label, "backup_label", active.backupLabel)
+		d.Logger.Info("Skipping upload; no backup yet", "s3", active.label, "backup_label", active.backupLabel)
 		return nil
 	}
 
@@ -245,7 +245,7 @@ func (d *Daemon) uploadOne(ctx context.Context, active activeEntry) error {
 		return err
 	}
 	if uploaded {
-		d.Logger.Info("Skipping upload; backup already uploaded", "s3_upload", active.label, "key", key)
+		d.Logger.Info("Skipping upload; backup already uploaded", "s3", active.label, "key", key)
 		return nil
 	}
 
@@ -258,7 +258,7 @@ func (d *Daemon) uploadOne(ctx context.Context, active activeEntry) error {
 		return err
 	}
 
-	d.Logger.Info("Uploaded backup", "s3_upload", active.label, "key", key)
+	d.Logger.Info("Uploaded backup", "s3", active.label, "key", key)
 	return nil
 }
 

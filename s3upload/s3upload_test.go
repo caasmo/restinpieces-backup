@@ -98,14 +98,14 @@ func prepareClient(t *testing.T, daemon *Daemon) {
 
 // testConfigFor builds a config with one online entry and one upload entry
 // whose settings point at the fake bucket.
-func testConfigFor(t *testing.T, serverURL, destDir string, entry config.BackupS3UploadEntry) config.Config {
+func testConfigFor(t *testing.T, serverURL, destDir string, entry config.BackupS3Entry) config.Config {
 	t.Helper()
 	return config.Config{
 		Backup: config.Backup{
 			OnlineAPI: config.BackupOnlineAPI{
 				"app-online": {SourcePath: "/data/app.db", DestPath: destDir, Frequency: config.Duration{Duration: time.Hour}, PagesPerStep: 100},
 			},
-			S3Upload: config.BackupS3Upload{"app-s3": entry},
+			S3: config.BackupS3{"app-s3": entry},
 		},
 		S3: config.S3{Endpoint: serverURL, Region: "test", Bucket: "test-bucket", AccessKey: "ak", SecretKey: "sk", UsePathStyle: true},
 	}
@@ -134,7 +134,7 @@ func TestDaemon_UploadNewestBackup(t *testing.T) {
 	writeBackup(t, destDir, "app-online-app.db-20250801T103000Z.db", []byte("older"))
 	newest := writeBackup(t, destDir, "app-online-app.db-20250802T103000Z.db", []byte("newest"))
 
-	cfg := testConfigFor(t, server.URL, destDir, config.BackupS3UploadEntry{
+	cfg := testConfigFor(t, server.URL, destDir, config.BackupS3Entry{
 		BackupLabel: "app-online",
 		Frequency:   config.Duration{Duration: time.Hour},
 	})
@@ -160,7 +160,7 @@ func TestDaemon_SkipsExistingObject(t *testing.T) {
 	writeBackup(t, destDir, "app-online-app.db-20250802T103000Z.db", []byte("newest"))
 	bucket.put("app-online-app.db-20250802T103000Z.db", []byte("already there"))
 
-	cfg := testConfigFor(t, server.URL, destDir, config.BackupS3UploadEntry{
+	cfg := testConfigFor(t, server.URL, destDir, config.BackupS3Entry{
 		BackupLabel: "app-online",
 		Frequency:   config.Duration{Duration: time.Hour},
 	})
@@ -185,7 +185,7 @@ func TestDaemon_EncryptsWithRecipient(t *testing.T) {
 		t.Fatalf("GenerateX25519Identity: %v", err)
 	}
 
-	cfg := testConfigFor(t, server.URL, destDir, config.BackupS3UploadEntry{
+	cfg := testConfigFor(t, server.URL, destDir, config.BackupS3Entry{
 		BackupLabel:  "app-online",
 		Frequency:    config.Duration{Duration: time.Hour},
 		AgeRecipient: identity.Recipient().String(),
@@ -219,7 +219,7 @@ func TestDaemon_NoBackupYet(t *testing.T) {
 	server, bucket := startFakeS3(t)
 	destDir := t.TempDir()
 
-	cfg := testConfigFor(t, server.URL, destDir, config.BackupS3UploadEntry{
+	cfg := testConfigFor(t, server.URL, destDir, config.BackupS3Entry{
 		BackupLabel: "app-online",
 		Frequency:   config.Duration{Duration: time.Hour},
 	})
@@ -247,7 +247,7 @@ func TestDaemon_UnknownBackupLabel(t *testing.T) {
 	server, bucket := startFakeS3(t)
 	destDir := t.TempDir()
 
-	cfg := testConfigFor(t, server.URL, destDir, config.BackupS3UploadEntry{
+	cfg := testConfigFor(t, server.URL, destDir, config.BackupS3Entry{
 		BackupLabel: "missing",
 		Frequency:   config.Duration{Duration: time.Hour},
 	})

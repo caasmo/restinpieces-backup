@@ -265,7 +265,7 @@ frequency = "24h"
 
 The S3 upload daemon copies the backups produced by the online API and VACUUM methods to an S3-compatible bucket. It finds the newest backup of a configured backup label, checks the bucket, and uploads the file if the object is not there yet. When an age recipient is configured the backup is encrypted while it is uploaded, so the bucket never holds the plaintext database.
 
-The object name carries the backup timestamp, so the daemon is safe to restart: it never uploads the same backup twice. The bucket settings come from the `[s3]` section and the upload entries from `[backup.s3_upload]`.
+The object name carries the backup timestamp, so the daemon is safe to restart: it never uploads the same backup twice. The bucket settings come from the `[s3]` section and the upload entries from `[backup.s3]`.
 
 ### restinpieces integration (`cmd/s3upload/restinpieces`)
 
@@ -274,9 +274,9 @@ It embeds the S3 upload daemon inside a restinpieces application: the daemon rea
 Configure which backups to upload with the `ripc` tool:
 
 ```bash
-ripc scaffold backup-s3-upload app-s3
-ripc set backup.s3_upload.app-s3.backup_label app-online
-ripc set backup.s3_upload.app-s3.age_recipient age1...
+ripc scaffold backup-s3 app-s3
+ripc set backup.s3.app-s3.backup_label app-online
+ripc set backup.s3.app-s3.age_recipient age1...
 ```
 
 After that reload the application configuration.

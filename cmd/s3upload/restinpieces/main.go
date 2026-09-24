@@ -14,7 +14,7 @@
 //	dest_path = "/path/to/backups"
 //	frequency = "24h"
 //
-//	[backup.s3_upload.app-s3]
+//	[backup.s3.app-s3]
 //	backup_label = "app-online"
 //	frequency = "5m"
 //	age_recipient = "age1..."
