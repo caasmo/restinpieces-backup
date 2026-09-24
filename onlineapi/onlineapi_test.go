@@ -16,7 +16,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// testCfg is a box payload satisfying OnlineApiConfig for tests.
+// testCfg is a config pointer payload satisfying OnlineApiConfig for tests.
 type testCfg struct {
 	backup config.Backup
 }
@@ -57,10 +57,10 @@ func TestOnlineApiStrategy_EntriesAndCopy(t *testing.T) {
 	cfg := config.Backup{OnlineAPI: config.BackupOnlineAPI{
 		"app": {SourcePath: sourcePath, DestPath: t.TempDir(), Frequency: config.Duration{Duration: 24 * time.Hour}, PagesPerStep: 100, SleepInterval: config.Duration{Duration: 10 * time.Millisecond}},
 	}}
-	box := new(atomic.Pointer[testCfg])
-	box.Store(&testCfg{backup: cfg})
+	pointer := new(atomic.Pointer[testCfg])
+	pointer.Store(&testCfg{backup: cfg})
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	strategy := &OnlineApiStrategy[testCfg]{box: box, logger: logger}
+	strategy := &OnlineApiStrategy[testCfg]{cfgPointer: pointer, logger: logger}
 
 	entries := strategy.Entries()
 	if len(entries) != 1 {
@@ -133,10 +133,10 @@ func TestModuloLogger_Log(t *testing.T) {
 	cfg := config.Backup{OnlineAPI: config.BackupOnlineAPI{
 		"source": {SourcePath: sourcePath, DestPath: t.TempDir(), Frequency: config.Duration{Duration: 24 * time.Hour}, PagesPerStep: 1, SleepInterval: config.Duration{Duration: 10 * time.Millisecond}},
 	}}
-	box := new(atomic.Pointer[testCfg])
-	box.Store(&testCfg{backup: cfg})
+	pointer := new(atomic.Pointer[testCfg])
+	pointer.Store(&testCfg{backup: cfg})
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	strategy := &OnlineApiStrategy[testCfg]{box: box, logger: logger}
+	strategy := &OnlineApiStrategy[testCfg]{cfgPointer: pointer, logger: logger}
 
 	entries := strategy.Entries()
 	destPath := filepath.Join(entries[0].DestPath, "out.db")

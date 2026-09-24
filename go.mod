@@ -3,6 +3,7 @@ module github.com/caasmo/restinpieces-backup
 go 1.25.0
 
 require (
+	filippo.io/age v1.2.1
 	github.com/caasmo/go-daemon-runner v0.1.0
 	github.com/caasmo/go-sqlite-rsync v0.7.0
 	github.com/caasmo/restinpieces v0.21.0
@@ -12,11 +13,10 @@ require (
 	github.com/pkg/sftp v1.13.9
 	golang.org/x/crypto v0.46.0
 	golang.org/x/sync v0.22.0
-	modernc.org/sqlite v1.56.0
+	modernc.org/sqlite v1.57.0
 )
 
 require (
-	filippo.io/age v1.2.1 // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/OneOfOne/xxhash v1.2.8 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -47,5 +47,6 @@ require (
 	modernc.org/libc v1.74.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	zombiezen.com/go/sqlite v1.4.2 // indirect
 )
+
+replace github.com/caasmo/restinpieces => /home/lipo/src/public/caasmo/restinpieces

@@ -1,18 +1,31 @@
-// Command restinpieces is an example of embedding the vacuum daemon
-// in a restinpieces application: the app serves its HTTP API and, in
-// the background, produces VACUUM INTO snapshots of the databases
-// configured in the backup section.
+// Command restinpieces is an example of embedding the S3 upload daemon in
+// a restinpieces application: the app serves its HTTP API and, in the
+// background, uploads the newest backups of the configured backup labels
+// to an S3-compatible bucket.
 //
-// The daemon reads the [backup] section of the application
-// configuration from the app's current-config box, so it needs no
-// configuration of its own. The databases are configured where the
-// rest of the application configuration lives, with the shape ripc
-// scaffolds for app mode:
+// The daemon reads the [backup] and [s3] sections of the application
+// configuration from the running app, so it needs no
+// configuration of its own. The uploads are configured like the rest of
+// the application configuration, with the tables ripc scaffolds for app
+// mode:
 //
-//	[backup.vacuum.app_db]
+//	[backup.online.app-online]
 //	source_path = "/path/to/db"
 //	dest_path = "/path/to/backups"
 //	frequency = "24h"
+//
+//	[backup.s3_upload.app-s3]
+//	backup_label = "app-online"
+//	frequency = "5m"
+//	age_recipient = "age1..."
+//
+//	[s3]
+//	endpoint = "https://s3.example.com"
+//	region = "auto"
+//	bucket = "my-backups"
+//	access_key = "..."
+//	secret_key = "..."
+//	use_path_style = true
 //
 // A SIGHUP reload of the application configuration is visible at the
 // next daemon tick.
@@ -25,8 +38,7 @@ import (
 	"os"
 
 	"github.com/caasmo/restinpieces"
-	"github.com/caasmo/restinpieces-backup/vacuum"
-	"github.com/caasmo/restinpieces/config"
+	"github.com/caasmo/restinpieces-backup/s3upload"
 )
 
 func main() {
@@ -36,9 +48,9 @@ func main() {
 
 	// Set custom usage message for the application
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s -dbpath <database-path> -age-key <identity-file-path>\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "Start a restinpieces application that also produces vacuum snapshots of the configured databases.\n\n")
-		fmt.Fprintf(os.Stderr, "Flags:\n")
+		_, _ = fmt.Fprintf(os.Stderr, "Usage: %s -dbpath <database-path> -age-key <identity-file-path>\n\n", os.Args[0])
+		_, _ = fmt.Fprintf(os.Stderr, "Start a restinpieces application that also uploads backup backups to S3.\n\n")
+		_, _ = fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 	}
 
@@ -81,17 +93,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	// --- Vacuum daemon setup ---
+	// --- S3 upload daemon setup ---
 	// New loads and validates the application configuration from the
-	// config store, so the current-config box is already populated.
-	// The vacuum daemon holds that box (coreApp.ConfigPointer()) and
-	// reads the backup.vacuum configuration at every tick.
-	vacuumDaemon := vacuum.New[config.Config](coreApp.ConfigPointer(), nil)
+	// config store, so the current configuration is already loaded.
+	// The daemon holds the pointer (coreApp.ConfigPointer()) and reads the
+	// backup and s3 configuration at every tick.
+	s3Daemon := s3upload.New(coreApp.ConfigPointer(), nil)
 
-	// The daemon satisfies the restinpieces server.Daemon contract:
+	// The daemon satisfies the restinpieces server.Daemon interface:
 	// the server starts it with Start() after the HTTP server, and
 	// stops it with Stop() during graceful shutdown.
-	srv.AddDaemon(vacuumDaemon)
+	srv.AddDaemon(s3Daemon)
 
 	// Run blocks until SIGINT/SIGQUIT/SIGHUP. SIGINT/SIGQUIT shut the
 	// server and the daemons down gracefully within the configured

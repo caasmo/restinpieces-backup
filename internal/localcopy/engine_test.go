@@ -410,7 +410,7 @@ func TestEngine_Handle_EmptySource(t *testing.T) {
 	}
 
 	expectedPath := filepath.Join(backupDir, (backupFile{
-		backupID: "source-empty.db",
+		backupID:   "source-empty.db",
 		time:       mockTime,
 		compressed: false,
 	}).String())
@@ -510,6 +510,37 @@ func TestBackupFileRoundTrip(t *testing.T) {
 		if got.backupID != f.backupID || !got.time.Equal(f.time) || got.compressed != f.compressed {
 			t.Errorf("round-trip %q = %+v, want %+v", f.String(), got, f)
 		}
+	}
+}
+
+func TestLatestBackupPath(t *testing.T) {
+	backupDir := t.TempDir()
+	olderPath := filepath.Join(backupDir, "source-source.db-20250801T103000Z.db")
+	newerPath := filepath.Join(backupDir, "source-source.db-20250802T103000Z.bck.gz")
+	for _, path := range []string{olderPath, newerPath} {
+		if err := os.WriteFile(path, []byte("backup"), 0644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+	// A hardlink must never be picked as a backup.
+	latestLink := filepath.Join(backupDir, fmt.Sprintf(backup.LatestFmt, "source-source.db"))
+	if err := os.Link(olderPath, latestLink); err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+
+	got, ok := LatestBackupPath(backupDir, "source", "/data/source.db")
+	if !ok {
+		t.Fatal("LatestBackupPath: no backup found")
+	}
+	if got != newerPath {
+		t.Errorf("LatestBackupPath: got %q, want %q", got, newerPath)
+	}
+
+	if _, ok := LatestBackupPath(filepath.Join(t.TempDir(), "missing"), "source", "/data/source.db"); ok {
+		t.Error("LatestBackupPath: expected false for missing directory")
+	}
+	if _, ok := LatestBackupPath(backupDir, "other", "/data/other.db"); ok {
+		t.Error("LatestBackupPath: expected false for unknown label")
 	}
 }
 

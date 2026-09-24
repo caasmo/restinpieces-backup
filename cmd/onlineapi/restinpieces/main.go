@@ -53,7 +53,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	dbPool, err := restinpieces.NewZombiezenPerformancePool(*dbPath)
+	dbPool, err := restinpieces.NewModerncPool(*dbPath)
 	if err != nil {
 		slog.Error("failed to create database pool", "error", err)
 		os.Exit(1)
@@ -75,7 +75,7 @@ func main() {
 
 	coreApp, srv, err := restinpieces.New(
 		restinpieces.WithLogger(logger),
-		restinpieces.WithZombiezenPool(dbPool),
+		restinpieces.WithModerncPool(dbPool),
 		restinpieces.WithAgeKeyPath(*ageKeyPath),
 	)
 	if err != nil {

@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// testCfg is a box payload satisfying VacuumConfig for tests.
+// testCfg is a config pointer payload satisfying VacuumConfig for tests.
 type testCfg struct {
 	backup config.Backup
 }
@@ -55,9 +55,9 @@ func TestVacuumStrategy_EntriesAndCopy(t *testing.T) {
 	cfg := config.Backup{Vacuum: config.BackupVacuum{
 		"app": {SourcePath: sourcePath, DestPath: t.TempDir(), Frequency: config.Duration{Duration: 24 * time.Hour}, Compression: true},
 	}}
-	box := new(atomic.Pointer[testCfg])
-	box.Store(&testCfg{backup: cfg})
-	strategy := &VacuumStrategy[testCfg]{box: box}
+	pointer := new(atomic.Pointer[testCfg])
+	pointer.Store(&testCfg{backup: cfg})
+	strategy := &VacuumStrategy[testCfg]{cfgPointer: pointer}
 
 	entries := strategy.Entries()
 	if len(entries) != 1 {
@@ -119,9 +119,9 @@ func TestNew_DaemonRunStop(t *testing.T) {
 	cfg := config.Backup{Vacuum: config.BackupVacuum{
 		"app": {SourcePath: sourcePath, DestPath: backupDir, Frequency: config.Duration{Duration: time.Hour}},
 	}}
-	box := new(atomic.Pointer[testCfg])
-	box.Store(&testCfg{backup: cfg})
-	d := New[testCfg](box, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	pointer := new(atomic.Pointer[testCfg])
+	pointer.Store(&testCfg{backup: cfg})
+	d := New[testCfg](pointer, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
 	if err := d.Run(); err != nil {
 		t.Fatalf("Run: %v", err)

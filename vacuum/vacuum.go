@@ -15,23 +15,23 @@ import (
 	"github.com/caasmo/restinpieces/config"
 )
 
-// VacuumConfig is the box payload contract: any type exposing the
+// VacuumConfig is the config pointer payload contract: any type exposing the
 // vacuum entries satisfies it. config.Config and the standalone
 // vacuumCfg both implement it.
 type VacuumConfig interface {
 	BackupVacuum() config.BackupVacuum
 }
 
-// VacuumStrategy reads the vacuum map from the config box on every
+// VacuumStrategy reads the vacuum map from the config pointer on every
 // call and copies databases with VACUUM INTO.
 type VacuumStrategy[T VacuumConfig] struct {
-	box *atomic.Pointer[T]
+	cfgPointer *atomic.Pointer[T]
 }
 
 // Entries returns the configured vacuum entries in the common shape.
 func (s *VacuumStrategy[T]) Entries() []localcopy.Entry {
 	var out []localcopy.Entry
-	for key, f := range (*s.box.Load()).BackupVacuum() {
+	for key, f := range (*s.cfgPointer.Load()).BackupVacuum() {
 		out = append(out, localcopy.Entry{
 			Label:       key,
 			SourcePath:  f.SourcePath,
@@ -53,9 +53,9 @@ func (s *VacuumStrategy[T]) Copy(ctx context.Context, srcConn *sql.Conn, destPat
 	return nil
 }
 
-// New creates the vacuum daemon around the config box. The daemon
+// New creates the vacuum daemon around the config pointer. The daemon
 // reads the box on every tick, so a configuration reload is visible
 // at the next tick. A nil logger falls back to slog.Default().
-func New[T VacuumConfig](box *atomic.Pointer[T], logger *slog.Logger) *localcopy.Daemon {
-	return localcopy.New("VacuumDaemon", &VacuumStrategy[T]{box: box}, logger)
+func New[T VacuumConfig](pointer *atomic.Pointer[T], logger *slog.Logger) *localcopy.Daemon {
+	return localcopy.New("VacuumDaemon", &VacuumStrategy[T]{cfgPointer: pointer}, logger)
 }

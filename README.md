@@ -22,6 +22,7 @@ It also provides pure Go rsync and sftp clients ([`cmd/rsync`](https://github.co
 | [`VACUUM INTO`](https://www.sqlite.org/lang_vacuum.html) | local backup | writes a clean, defragmented copy of the database | [`cmd/vacuum`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/vacuum) |
 | rsync pull client | remote backup, delta-based | pulls the `latest-*.db` snapshots over SSH | [`cmd/rsync`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/rsync) |
 | sftp pull client | remote backup | pulls the newest snapshot over SFTP | [`cmd/sftp`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/sftp) |
+| S3 upload | remote backup, offsite | uploads the newest backup to an S3-compatible bucket, encrypting it with age | [`cmd/s3upload`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/s3upload) |
 
 For point-in-time restores and syncing to S3 and other object stores, see [restinpieces-litestream](https://github.com/caasmo/restinpieces-litestream).
 
@@ -49,6 +50,8 @@ For point-in-time restores and syncing to S3 and other object stores, see [resti
   - [standalone daemon (`cmd/vacuum/daemon`)](#standalone-daemon-cmdvacuumdaemon)
     - [Build](#build-3)
     - [Configuration](#configuration-2)
+- [S3 upload (`cmd/s3upload`)](#s3-upload-cmds3upload)
+  - [restinpieces integration (`cmd/s3upload/restinpieces`)](#restinpieces-integration-cmds3uploadrestinpieces)
 - [rsync (`cmd/rsync`)](#rsync-cmdrsync)
   - [rsync one-shot (`cmd/rsync/oneshot`)](#rsync-one-shot-cmdrsynconeshot)
     - [Build](#build-4)
@@ -257,6 +260,26 @@ source_path = "/data/other.db"
 dest_path = "/data/backups"
 frequency = "24h"
 ```
+
+## S3 upload (`cmd/s3upload`)
+
+The S3 upload daemon copies the backups produced by the online API and VACUUM methods to an S3-compatible bucket. It finds the newest backup of a configured backup label, checks the bucket, and uploads the file if the object is not there yet. When an age recipient is configured the backup is encrypted while it is uploaded, so the bucket never holds the plaintext database.
+
+The object name carries the backup timestamp, so the daemon is safe to restart: it never uploads the same backup twice. The bucket settings come from the `[s3]` section and the upload entries from `[backup.s3_upload]`.
+
+### restinpieces integration (`cmd/s3upload/restinpieces`)
+
+It embeds the S3 upload daemon inside a restinpieces application: the daemon reads the backup and S3 configuration from the app's config pointer. The complete, runnable example is in [`main.go`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/s3upload/restinpieces/main.go): it builds the application, creates the daemon from the app's config pointer, registers it with `srv.AddDaemon`, then runs the server.
+
+Configure which backups to upload with the `ripc` tool:
+
+```bash
+ripc scaffold backup-s3-upload app-s3
+ripc set backup.s3_upload.app-s3.backup_label app-online
+ripc set backup.s3_upload.app-s3.age_recipient age1...
+```
+
+After that reload the application configuration.
 
 ## rsync (`cmd/rsync`)
 

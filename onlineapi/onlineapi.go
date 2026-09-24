@@ -18,26 +18,26 @@ import (
 	"modernc.org/sqlite"
 )
 
-// OnlineApiConfig is the box payload contract: any type exposing the
+// OnlineApiConfig is the config pointer payload contract: any type exposing the
 // online entries satisfies it. config.Config and the standalone
 // onlineapiCfg both implement it.
 type OnlineApiConfig interface {
 	BackupOnlineAPI() config.BackupOnlineAPI
 }
 
-// OnlineApiStrategy reads the online map from the config box on every
+// OnlineApiStrategy reads the online map from the config pointer on every
 // call and copies databases with the Online Backup API. The tuning
 // fields (pages_per_step, sleep_interval) are read per entry from the
 // box at copy time — they never enter the shared Entry shape.
 type OnlineApiStrategy[T OnlineApiConfig] struct {
-	box    *atomic.Pointer[T]
-	logger *slog.Logger
+	cfgPointer *atomic.Pointer[T]
+	logger     *slog.Logger
 }
 
 // Entries returns the configured online entries in the common shape.
 func (s *OnlineApiStrategy[T]) Entries() []localcopy.Entry {
 	var out []localcopy.Entry
-	for key, f := range (*s.box.Load()).BackupOnlineAPI() {
+	for key, f := range (*s.cfgPointer.Load()).BackupOnlineAPI() {
 		out = append(out, localcopy.Entry{
 			Label:       key,
 			SourcePath:  f.SourcePath,
@@ -52,7 +52,7 @@ func (s *OnlineApiStrategy[T]) Entries() []localcopy.Entry {
 // Copy performs one online backup copy of the source database using
 // the entry's pages_per_step and sleep_interval.
 func (s *OnlineApiStrategy[T]) Copy(ctx context.Context, srcConn *sql.Conn, destPath string, entry localcopy.Entry) error {
-	f := (*s.box.Load()).BackupOnlineAPI()[entry.Label] // full config, per entry
+	f := (*s.cfgPointer.Load()).BackupOnlineAPI()[entry.Label] // full config, per entry
 	pagesPerStep := f.PagesPerStep
 	sleepInterval := f.SleepInterval.Duration // 0 is valid: no throttling
 
@@ -110,14 +110,14 @@ func (s *OnlineApiStrategy[T]) Copy(ctx context.Context, srcConn *sql.Conn, dest
 	}
 }
 
-// New creates the onlineapi daemon around the config box. The daemon
+// New creates the onlineapi daemon around the config pointer. The daemon
 // reads the box on every tick, so a configuration reload is visible
 // at the next tick. A nil logger falls back to slog.Default().
-func New[T OnlineApiConfig](box *atomic.Pointer[T], logger *slog.Logger) *localcopy.Daemon {
+func New[T OnlineApiConfig](pointer *atomic.Pointer[T], logger *slog.Logger) *localcopy.Daemon {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return localcopy.New("OnlineApiDaemon", &OnlineApiStrategy[T]{box: box, logger: logger}, logger)
+	return localcopy.New("OnlineApiDaemon", &OnlineApiStrategy[T]{cfgPointer: pointer, logger: logger}, logger)
 }
 
 // destURI builds the file: URI for a backup destination path. The

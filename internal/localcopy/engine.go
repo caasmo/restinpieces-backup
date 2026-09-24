@@ -195,7 +195,7 @@ func (e *Engine) handle(ctx context.Context, now time.Time) error {
 			continue
 		}
 
-		backupID := e.buildBackupID(entry.Label, entry.SourcePath)
+		backupID := buildBackupID(entry.Label, entry.SourcePath)
 
 		// --- step 3: skip if not yet due ---
 		if !e.isBackupDue(latest[backupID].time, entry.Frequency, now) {
@@ -350,15 +350,6 @@ func (e *Engine) handleUncompressed(ctx context.Context, entry Entry, backupID s
 	return e.linkLatest(finalPath, latestPath)
 }
 
-// buildBackupID returns the prefix used in backup filenames and hardlinks.
-// Produces <key>-<basename> so same-basename source paths do not collide
-// (AGENTS.md: map keys are labels, not identifiers).
-//
-// Example: buildBackupID("app_db", "data/app.db") → "app_db-app.db"
-func (e *Engine) buildBackupID(key, sourcePath string) string {
-	return key + "-" + filepath.Base(sourcePath)
-}
-
 // buildTempPath returns a unique staging path in os.TempDir for the
 // database dump before compression. Produces e.g. "/tmp/backup-app.db-1234567890.db".
 func (e *Engine) buildTempPath(dbName string, now time.Time) string {
@@ -382,38 +373,19 @@ func (e *Engine) latestBackupFiles(entries []Entry) map[string]backupFile {
 		if entry.SourcePath == "" || entry.DestPath == "" {
 			continue // deactivated entry, never backed up
 		}
-		destDirs[entry.DestPath] = append(destDirs[entry.DestPath], e.buildBackupID(entry.Label, entry.SourcePath))
+		destDirs[entry.DestPath] = append(destDirs[entry.DestPath], buildBackupID(entry.Label, entry.SourcePath))
 	}
 	latest := make(map[string]backupFile)
 	for _, dir := range slices.Sorted(maps.Keys(destDirs)) {
-		backupIDs := destDirs[dir]
-		entries, err := os.ReadDir(dir)
+		found, err := scanBackupDir(dir, destDirs[dir])
 		if err != nil {
 			if !os.IsNotExist(err) {
 				e.logger.Warn("Failed to scan backup directory", "error", err)
 			}
 			continue
 		}
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			name := entry.Name()
-			// Extension gate: only backup filenames reach the parser; everything
-			// else (stale .tmp, logs, etc.) is not a backup.
-			if !strings.HasSuffix(name, uncompressedExt) && !strings.HasSuffix(name, compressedExt) {
-				continue
-			}
-			parsed, err := parseBackupFile(name)
-			if err != nil {
-				continue // link, pre-feature backup, or junk — never a backup
-			}
-			for _, id := range backupIDs {
-				if parsed.backupID == id && parsed.time.After(latest[id].time) {
-					latest[id] = parsed
-					break
-				}
-			}
+		for id, file := range found {
+			latest[id] = file
 		}
 	}
 	return latest
