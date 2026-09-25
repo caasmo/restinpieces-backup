@@ -1,11 +1,11 @@
-// Command restinpieces is an example of embedding the S3 upload daemon in
+// Command restinpieces is an example of embedding the S3 daemon in
 // a restinpieces application: the app serves its HTTP API and, in the
-// background, uploads the newest backups of the configured backup labels
+// background, puts the newest backups of the configured backup labels
 // to an S3-compatible bucket.
 //
 // The daemon reads the [backup] and [s3] sections of the application
 // configuration from the running app, so it needs no
-// configuration of its own. The uploads are configured like the rest of
+// configuration of its own. The entries are configured like the rest of
 // the application configuration, with the tables ripc scaffolds for app
 // mode:
 //
@@ -38,7 +38,7 @@ import (
 	"os"
 
 	"github.com/caasmo/restinpieces"
-	"github.com/caasmo/restinpieces-backup/s3upload"
+	"github.com/caasmo/restinpieces-backup/s3"
 )
 
 func main() {
@@ -49,7 +49,7 @@ func main() {
 	// Set custom usage message for the application
 	flag.Usage = func() {
 		_, _ = fmt.Fprintf(os.Stderr, "Usage: %s -dbpath <database-path> -age-key <identity-file-path>\n\n", os.Args[0])
-		_, _ = fmt.Fprintf(os.Stderr, "Start a restinpieces application that also uploads backup backups to S3.\n\n")
+		_, _ = fmt.Fprintf(os.Stderr, "Start a restinpieces application that also puts backups into S3.\n\n")
 		_, _ = fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 	}
@@ -93,12 +93,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	// --- S3 upload daemon setup ---
+	// --- S3 daemon setup ---
 	// New loads and validates the application configuration from the
 	// config store, so the current configuration is already loaded.
 	// The daemon holds the pointer (coreApp.ConfigPointer()) and reads the
 	// backup and s3 configuration at every tick.
-	s3Daemon := s3upload.New(coreApp.ConfigPointer(), nil)
+	s3Daemon := s3.New(coreApp.ConfigPointer(), nil)
 
 	// The daemon satisfies the restinpieces server.Daemon interface:
 	// the server starts it with Start() after the HTTP server, and

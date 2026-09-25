@@ -59,7 +59,7 @@ func scanBackupDir(dir string, backupIDs []string) (map[string]backupFile, error
 // backup identified by label and sourcePath. The second return value is
 // false when the directory or a matching backup is missing. The local
 // copy daemons find their backups the same way, so they and the S3
-// upload daemon always agree on which backup is the newest.
+// daemon always agree on which backup is the newest.
 func LatestBackupPath(destPath, label, sourcePath string) (string, bool) {
 	backupID := buildBackupID(label, sourcePath)
 

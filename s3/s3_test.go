@@ -1,4 +1,4 @@
-package s3upload
+package s3
 
 import (
 	"bytes"
@@ -87,16 +87,16 @@ func newTestDaemon(cfg config.Config) *Daemon {
 	return New(&pointer, logger)
 }
 
-// prepareClient rebuilds the daemon's S3 client from the test config,
+// prepareClient builds the daemon's S3 client from the test config,
 // failing the test when the config has no endpoint.
-func prepareClient(t *testing.T, daemon *Daemon) {
+func prepareClient(t *testing.T, daemon *Daemon, s3Config config.S3) {
 	t.Helper()
-	if !daemon.buildS3Client() {
-		t.Fatal("buildS3Client: no client built")
+	if err := daemon.buildS3Client(s3Config); err != nil {
+		t.Fatalf("buildS3Client: %v", err)
 	}
 }
 
-// testConfigFor builds a config with one online entry and one upload entry
+// testConfigFor builds a config with one online entry and one S3 entry
 // whose settings point at the fake bucket.
 func testConfigFor(t *testing.T, serverURL, destDir string, entry config.BackupS3Entry) config.Config {
 	t.Helper()
@@ -128,7 +128,7 @@ func writeBackup(t *testing.T, dir, name string, data []byte) string {
 	return path
 }
 
-func TestDaemon_UploadNewestBackup(t *testing.T) {
+func TestDaemon_PutNewestBackup(t *testing.T) {
 	server, bucket := startFakeS3(t)
 	destDir := t.TempDir()
 	writeBackup(t, destDir, "app-online-app.db-20250801T103000Z.db", []byte("older"))
@@ -140,9 +140,9 @@ func TestDaemon_UploadNewestBackup(t *testing.T) {
 	})
 	daemon := newTestDaemon(cfg)
 
-	prepareClient(t, daemon)
+	prepareClient(t, daemon, cfg.S3)
 
-	if err := daemon.handle(context.Background(), daemon.activeEntries()); err != nil {
+	if err := daemon.handle(context.Background(), cfg.S3, daemon.activeEntries(&cfg)); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
 
@@ -150,7 +150,7 @@ func TestDaemon_UploadNewestBackup(t *testing.T) {
 		t.Fatalf("object = %q, want %q", got, "newest")
 	}
 	if got := bucket.object("app-online-app.db-20250801T103000Z.db"); got != nil {
-		t.Fatalf("older backup should not be uploaded, got %q", got)
+		t.Fatalf("older backup should not be put, got %q", got)
 	}
 }
 
@@ -166,9 +166,9 @@ func TestDaemon_SkipsExistingObject(t *testing.T) {
 	})
 	daemon := newTestDaemon(cfg)
 
-	prepareClient(t, daemon)
+	prepareClient(t, daemon, cfg.S3)
 
-	if err := daemon.handle(context.Background(), daemon.activeEntries()); err != nil {
+	if err := daemon.handle(context.Background(), cfg.S3, daemon.activeEntries(&cfg)); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
 	if got := bucket.putCount(); got != 0 {
@@ -192,15 +192,15 @@ func TestDaemon_EncryptsWithRecipient(t *testing.T) {
 	})
 	daemon := newTestDaemon(cfg)
 
-	prepareClient(t, daemon)
+	prepareClient(t, daemon, cfg.S3)
 
-	if err := daemon.handle(context.Background(), daemon.activeEntries()); err != nil {
+	if err := daemon.handle(context.Background(), cfg.S3, daemon.activeEntries(&cfg)); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
 
 	stored := bucket.object("app-online-app.db-20250802T103000Z.db.age")
 	if stored == nil {
-		t.Fatal("encrypted object not uploaded")
+		t.Fatal("encrypted object not put")
 	}
 	reader, err := age.Decrypt(bytes.NewReader(stored), identity)
 	if err != nil {
@@ -225,9 +225,9 @@ func TestDaemon_NoBackupYet(t *testing.T) {
 	})
 	daemon := newTestDaemon(cfg)
 
-	prepareClient(t, daemon)
+	prepareClient(t, daemon, cfg.S3)
 
-	if err := daemon.handle(context.Background(), daemon.activeEntries()); err != nil {
+	if err := daemon.handle(context.Background(), cfg.S3, daemon.activeEntries(&cfg)); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
 	if got := bucket.putCount(); got != 0 {
@@ -238,8 +238,8 @@ func TestDaemon_NoBackupYet(t *testing.T) {
 func TestDaemon_NoEndpoint(t *testing.T) {
 	daemon := newTestDaemon(config.Config{})
 
-	if daemon.buildS3Client() {
-		t.Fatal("buildS3Client: expected false when s3.endpoint is empty")
+	if err := daemon.buildS3Client(config.S3{}); err == nil {
+		t.Fatal("buildS3Client: expected error when s3.endpoint is empty")
 	}
 }
 
@@ -254,10 +254,10 @@ func TestDaemon_UnknownBackupLabel(t *testing.T) {
 	daemon := newTestDaemon(cfg)
 
 	// A backup_label that names no entry is dropped by activeEntries, so
-	// the tick has nothing to upload and no error.
-	prepareClient(t, daemon)
+	// the tick has nothing to put and no error.
+	prepareClient(t, daemon, cfg.S3)
 
-	if err := daemon.handle(context.Background(), daemon.activeEntries()); err != nil {
+	if err := daemon.handle(context.Background(), cfg.S3, daemon.activeEntries(&cfg)); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
 	if got := bucket.putCount(); got != 0 {
