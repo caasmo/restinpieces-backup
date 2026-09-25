@@ -158,12 +158,13 @@ func (d *Daemon) buildS3Client(s3Config config.S3) error {
 	}
 
 	d.s3Client = &s3.S3{
-		Endpoint:     s3Config.Endpoint,
-		Region:       s3Config.Region,
-		Bucket:       s3Config.Bucket,
-		AccessKey:    s3Config.AccessKey,
-		SecretKey:    s3Config.SecretKey,
-		UsePathStyle: s3Config.UsePathStyle,
+		Endpoint:             s3Config.Endpoint,
+		Region:               s3Config.Region,
+		Bucket:               s3Config.Bucket,
+		AccessKey:            s3Config.AccessKey,
+		SecretKey:            s3Config.SecretKey,
+		UsePathStyle:         s3Config.UsePathStyle,
+		RequireContentLength: s3Config.RequireContentLength,
 	}
 	return nil
 }
@@ -303,8 +304,11 @@ func (d *Daemon) putFile(ctx context.Context, key, path string) error {
 	return nil
 }
 
-// putEncrypted puts one backup encrypted with age. The encrypted
-// size is not known in advance, so the request is sent in chunks. age
+// putEncrypted puts one backup encrypted with age. When the S3 provider
+// requires a content length, the encrypted content length is not known in
+// advance, so the backup is encrypted once into io.Discard to learn the
+// content length and then encrypted again while the request is sent.
+// Otherwise the encrypted body is sent in chunks, with no length. age
 // encrypts through a writer while the request body needs a reader; the
 // standard bridge is an io.Pipe with a goroutine running the producer,
 // unbuffered so memory stays flat. Producer errors travel through
@@ -313,6 +317,18 @@ func (d *Daemon) putEncrypted(ctx context.Context, key, path, recipient string) 
 	recipientID, err := age.ParseX25519Recipient(recipient)
 	if err != nil {
 		return fmt.Errorf("failed to parse age recipient: %w", err)
+	}
+
+	// a content length of -1 means the S3 provider accepts an unknown
+	// length; the body is then sent in chunks
+	contentLength := int64(-1)
+	if d.s3Client.RequireContentLength {
+		d.Logger.Info("Measuring encrypted content length; the S3 provider requires it", "key", key)
+		contentLength, err = encryptedContentLength(path, recipientID)
+		if err != nil {
+			return fmt.Errorf("failed to measure encrypted backup: %w", err)
+		}
+		d.Logger.Info("Measured encrypted content length", "key", key, "content_length", contentLength)
 	}
 
 	pipeReader, pipeWriter := io.Pipe()
@@ -324,13 +340,37 @@ func (d *Daemon) putEncrypted(ctx context.Context, key, path, recipient string) 
 		producerErrCh <- producerErr
 	}()
 
-	// size -1: the encrypted size is unknown, the body is sent in chunks
-	putErr := d.s3Client.PutObject(ctx, key, pipeReader, -1)
+	putErr := d.s3Client.PutObject(ctx, key, pipeReader, contentLength)
 	// PutObject may return before the body is drained (for example when the
 	// request fails); closing the reader unblocks a producer still writing.
 	_ = pipeReader.Close()
 	producerErr := <-producerErrCh
 	return errors.Join(putErr, producerErr)
+}
+
+// encryptedContentLength encrypts path once into io.Discard to learn the
+// content length of the ciphertext without keeping the bytes. The caller
+// sends the returned count as the content length of the encrypted upload.
+func encryptedContentLength(path string, recipient age.Recipient) (int64, error) {
+	discard := &discardWriter{}
+	err := encryptFile(path, recipient, discard)
+	if err != nil {
+		return 0, err
+	}
+	return discard.written, nil
+}
+
+// discardWriter writes every byte to io.Discard and records the total. A
+// first encryption pass into it learns the content length without keeping
+// the ciphertext.
+type discardWriter struct {
+	written int64
+}
+
+func (w *discardWriter) Write(p []byte) (int, error) {
+	n, _ := io.Discard.Write(p)
+	w.written += int64(n)
+	return n, nil
 }
 
 // encryptFile copies path into w through age encryption. It flushes the

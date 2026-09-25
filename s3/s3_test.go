@@ -23,9 +23,11 @@ import (
 // fakeS3 is an in-memory bucket for the tests. It answers the HEAD and
 // PUT requests the daemon sends and records the stored objects.
 type fakeS3 struct {
-	mu      sync.Mutex
-	objects map[string][]byte
-	puts    int
+	mu                   sync.Mutex
+	objects              map[string][]byte
+	puts                 int
+	lastContentLength    int64
+	lastTransferEncoding []string
 }
 
 func newFakeS3() *fakeS3 {
@@ -48,6 +50,8 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 		w.WriteHeader(http.StatusOK)
 	case http.MethodPut:
+		f.lastContentLength = r.ContentLength
+		f.lastTransferEncoding = r.TransferEncoding
 		data, err := io.ReadAll(r.Body)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -77,6 +81,14 @@ func (f *fakeS3) putCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.puts
+}
+
+// lastPutRequest returns the content length and transfer encoding of the
+// most recent PUT request.
+func (f *fakeS3) lastPutRequest() (int64, []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastContentLength, f.lastTransferEncoding
 }
 
 // newTestDaemon builds a daemon over the config.
@@ -202,6 +214,62 @@ func TestDaemon_EncryptsWithRecipient(t *testing.T) {
 	if stored == nil {
 		t.Fatal("encrypted object not put")
 	}
+	contentLength, transferEncoding := bucket.lastPutRequest()
+	if contentLength != -1 {
+		t.Errorf("content length = %d, want -1", contentLength)
+	}
+	if len(transferEncoding) != 1 || transferEncoding[0] != "chunked" {
+		t.Errorf("transfer encoding = %v, want [chunked]", transferEncoding)
+	}
+	reader, err := age.Decrypt(bytes.NewReader(stored), identity)
+	if err != nil {
+		t.Fatalf("Decrypt: %v", err)
+	}
+	plaintext, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if string(plaintext) != "plaintext" {
+		t.Fatalf("decrypted = %q, want %q", plaintext, "plaintext")
+	}
+}
+
+func TestDaemon_EncryptsWithRequiredContentLength(t *testing.T) {
+	server, bucket := startFakeS3(t)
+	destDir := t.TempDir()
+	writeBackup(t, destDir, "app-online-app.db-20250802T103000Z.db", []byte("plaintext"))
+	identity, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatalf("GenerateX25519Identity: %v", err)
+	}
+
+	cfg := testConfigFor(t, server.URL, destDir, config.BackupS3Entry{
+		BackupLabel:  "app-online",
+		Frequency:    config.Duration{Duration: time.Hour},
+		AgeRecipient: identity.Recipient().String(),
+	})
+	cfg.S3.RequireContentLength = true
+	daemon := newTestDaemon(cfg)
+
+	prepareClient(t, daemon, cfg.S3)
+
+	if err := daemon.handle(context.Background(), cfg.S3, daemon.activeEntries(&cfg)); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	stored := bucket.object("app-online-app.db-20250802T103000Z.db.age")
+	if stored == nil {
+		t.Fatal("encrypted object not put")
+	}
+
+	contentLength, transferEncoding := bucket.lastPutRequest()
+	if contentLength != int64(len(stored)) {
+		t.Errorf("content length = %d, want %d", contentLength, len(stored))
+	}
+	if len(transferEncoding) != 0 {
+		t.Errorf("transfer encoding = %v, want none", transferEncoding)
+	}
+
 	reader, err := age.Decrypt(bytes.NewReader(stored), identity)
 	if err != nil {
 		t.Fatalf("Decrypt: %v", err)
