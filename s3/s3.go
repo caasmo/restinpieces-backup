@@ -176,13 +176,13 @@ func (d *Daemon) buildS3Client(s3Config config.S3) error {
 // re-checked.
 func (d *Daemon) handle(ctx context.Context, s3Config config.S3, entries []activeEntry) error {
 	if len(entries) == 0 {
-		d.Logger.Info("No active S3 entries; S3 deactivated.")
+		d.Logger.Info("No active backup.s3 entries; nothing to do.")
 		return nil
 	}
 
 	err := d.buildS3Client(s3Config)
 	if err != nil {
-		d.Logger.Info("S3 deactivated; s3.endpoint is not configured.")
+		d.Logger.Info("s3.endpoint is empty; nothing to do.")
 		return nil
 	}
 
