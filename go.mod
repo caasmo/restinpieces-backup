@@ -5,8 +5,8 @@ go 1.25.0
 require (
 	filippo.io/age v1.2.1
 	github.com/caasmo/go-daemon-runner v0.1.0
-	github.com/caasmo/go-sqlite-rsync v0.7.0
-	github.com/caasmo/restinpieces v0.36.3
+	github.com/caasmo/go-sqlite-rsync v0.8.0
+	github.com/caasmo/restinpieces v0.37.0
 	github.com/gokrazy/rsync v0.3.4
 	github.com/landlock-lsm/go-landlock v0.9.0
 	github.com/pelletier/go-toml/v2 v2.4.3
