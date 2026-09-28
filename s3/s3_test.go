@@ -283,6 +283,33 @@ func TestDaemon_EncryptsWithRequiredContentLength(t *testing.T) {
 	}
 }
 
+func TestDaemon_Interval(t *testing.T) {
+	daemon := newTestDaemon(config.Config{})
+
+	t.Run("empty returns cap", func(t *testing.T) {
+		if got := daemon.interval(nil); got != MaxTickInterval {
+			t.Fatalf("interval() = %v, want %v", got, MaxTickInterval)
+		}
+	})
+
+	t.Run("frequency above cap returns cap", func(t *testing.T) {
+		entries := []activeEntry{{label: "a", frequency: time.Hour}}
+		if got := daemon.interval(entries); got != MaxTickInterval {
+			t.Fatalf("interval() = %v, want %v", got, MaxTickInterval)
+		}
+	})
+
+	t.Run("frequency below cap wins", func(t *testing.T) {
+		entries := []activeEntry{
+			{label: "a", frequency: time.Hour},
+			{label: "b", frequency: time.Minute},
+		}
+		if got := daemon.interval(entries); got != time.Minute {
+			t.Fatalf("interval() = %v, want %v", got, time.Minute)
+		}
+	})
+}
+
 func TestDaemon_NoBackupYet(t *testing.T) {
 	server, bucket := startFakeS3(t)
 	destDir := t.TempDir()
