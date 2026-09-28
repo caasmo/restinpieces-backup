@@ -29,9 +29,10 @@ import (
 
 // Daemon puts backups into S3 on an interval. The first one runs
 // immediately at startup, and after that one runs every interval.
-// The interval is the smallest frequency among the entries (5m when none
-// is active); it is re-read after every run, so a frequency change on
-// reload takes effect before the next wait.
+// The interval is the smallest frequency among the entries capped by
+// MaxTickInterval (MaxTickInterval when none is active); it is
+// re-read after every run, so a frequency change on reload takes
+// effect before the next wait.
 type Daemon struct {
 	daemon.Base
 	cfgPointer *atomic.Pointer[config.Config]
@@ -202,15 +203,16 @@ func (d *Daemon) handle(ctx context.Context, s3Config config.S3, entries []activ
 	return errors.Join(errs...)
 }
 
-// defaultInterval is how often the daemon checks for a new backup when
-// no entry is active.
-const defaultInterval = 5 * time.Minute
+// MaxTickInterval caps the tick interval. A frequency larger than
+// this still checks every MaxTickInterval; ticks with no new backup
+// are skipped.
+const MaxTickInterval = 10 * time.Minute
 
 // interval returns how often the daemon checks for a new backup:
-// the smallest frequency among the entries, or defaultInterval
-// when the list is empty.
+// the smallest frequency among the entries capped by
+// MaxTickInterval, or MaxTickInterval when the list is empty.
 func (d *Daemon) interval(entries []activeEntry) time.Duration {
-	min := defaultInterval
+	min := MaxTickInterval
 	for _, active := range entries {
 		if active.frequency <= 0 {
 			continue // zero means the default

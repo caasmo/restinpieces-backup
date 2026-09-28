@@ -9,28 +9,39 @@ import (
 )
 
 // TestInterval covers the tick cadence selection: the smallest
-// frequency among the active entries, with deactivated entries skipped
-// and zero when nothing is active.
+// frequency among the active entries capped by MaxTickInterval,
+// with deactivated entries skipped and MaxTickInterval when nothing
+// is active.
 func TestInterval(t *testing.T) {
 	sourcePath := filepath.Join(t.TempDir(), "source.db")
 	backupDir := filepath.Join(t.TempDir(), "backups")
 
-	t.Run("single active entry", func(t *testing.T) {
+	t.Run("frequency above cap returns cap", func(t *testing.T) {
 		d := New("TestDaemon", &fakeStrategy{entries: []Entry{
 			{Label: "a", SourcePath: sourcePath, DestPath: backupDir, Frequency: time.Hour},
 		}}, nil)
-		if got := d.interval(); got != time.Hour {
-			t.Fatalf("interval() = %v, want %v", got, time.Hour)
+		if got := d.interval(); got != MaxTickInterval {
+			t.Fatalf("interval() = %v, want %v", got, MaxTickInterval)
 		}
 	})
 
-	t.Run("two entries, smaller frequency wins", func(t *testing.T) {
+	t.Run("two entries above cap return cap", func(t *testing.T) {
 		d := New("TestDaemon", &fakeStrategy{entries: []Entry{
 			{Label: "a", SourcePath: sourcePath, DestPath: backupDir, Frequency: time.Hour},
 			{Label: "b", SourcePath: sourcePath, DestPath: backupDir, Frequency: 30 * time.Minute},
 		}}, nil)
-		if got := d.interval(); got != 30*time.Minute {
-			t.Fatalf("interval() = %v, want %v", got, 30*time.Minute)
+		if got := d.interval(); got != MaxTickInterval {
+			t.Fatalf("interval() = %v, want %v", got, MaxTickInterval)
+		}
+	})
+
+	t.Run("frequency below cap wins", func(t *testing.T) {
+		d := New("TestDaemon", &fakeStrategy{entries: []Entry{
+			{Label: "a", SourcePath: sourcePath, DestPath: backupDir, Frequency: time.Hour},
+			{Label: "b", SourcePath: sourcePath, DestPath: backupDir, Frequency: time.Minute},
+		}}, nil)
+		if got := d.interval(); got != time.Minute {
+			t.Fatalf("interval() = %v, want %v", got, time.Minute)
 		}
 	})
 
@@ -45,12 +56,12 @@ func TestInterval(t *testing.T) {
 		}
 	})
 
-	t.Run("no active entries", func(t *testing.T) {
+	t.Run("no active entries returns cap", func(t *testing.T) {
 		d := New("TestDaemon", &fakeStrategy{entries: []Entry{
 			{Label: "a", SourcePath: "", DestPath: "", Frequency: time.Hour},
 		}}, nil)
-		if got := d.interval(); got != 0 {
-			t.Fatalf("interval() = %v, want 0", got)
+		if got := d.interval(); got != MaxTickInterval {
+			t.Fatalf("interval() = %v, want %v", got, MaxTickInterval)
 		}
 	})
 }
