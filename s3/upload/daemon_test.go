@@ -1,4 +1,4 @@
-package s3
+package upload
 
 import (
 	"bytes"
@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"filippo.io/age"
+	"github.com/caasmo/restinpieces-backup/s3"
 	"github.com/caasmo/restinpieces/config"
 )
 
@@ -140,6 +141,18 @@ func writeBackup(t *testing.T, dir, name string, data []byte) string {
 	return path
 }
 
+// handleOnce resolves the config's active entries and runs one daemon
+// pass over them.
+func handleOnce(t *testing.T, daemon *Daemon, cfg config.Config) {
+	t.Helper()
+
+	entries := s3.ActiveEntries(&cfg)
+	err := daemon.handle(context.Background(), cfg.S3, entries)
+	if err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+}
+
 func TestDaemon_PutNewestBackup(t *testing.T) {
 	server, bucket := startFakeS3(t)
 	destDir := t.TempDir()
@@ -154,9 +167,7 @@ func TestDaemon_PutNewestBackup(t *testing.T) {
 
 	prepareClient(t, daemon, cfg.S3)
 
-	if err := daemon.handle(context.Background(), cfg.S3, daemon.activeEntries(&cfg)); err != nil {
-		t.Fatalf("handle: %v", err)
-	}
+	handleOnce(t, daemon, cfg)
 
 	if got := bucket.object(filepath.Base(newest)); string(got) != "newest" {
 		t.Fatalf("object = %q, want %q", got, "newest")
@@ -180,9 +191,7 @@ func TestDaemon_SkipsExistingObject(t *testing.T) {
 
 	prepareClient(t, daemon, cfg.S3)
 
-	if err := daemon.handle(context.Background(), cfg.S3, daemon.activeEntries(&cfg)); err != nil {
-		t.Fatalf("handle: %v", err)
-	}
+	handleOnce(t, daemon, cfg)
 	if got := bucket.putCount(); got != 0 {
 		t.Fatalf("put count = %d, want 0", got)
 	}
@@ -206,9 +215,7 @@ func TestDaemon_EncryptsWithRecipient(t *testing.T) {
 
 	prepareClient(t, daemon, cfg.S3)
 
-	if err := daemon.handle(context.Background(), cfg.S3, daemon.activeEntries(&cfg)); err != nil {
-		t.Fatalf("handle: %v", err)
-	}
+	handleOnce(t, daemon, cfg)
 
 	stored := bucket.object("app-online-app.db-20250802T103000Z.db.age")
 	if stored == nil {
@@ -253,9 +260,7 @@ func TestDaemon_EncryptsWithRequiredContentLength(t *testing.T) {
 
 	prepareClient(t, daemon, cfg.S3)
 
-	if err := daemon.handle(context.Background(), cfg.S3, daemon.activeEntries(&cfg)); err != nil {
-		t.Fatalf("handle: %v", err)
-	}
+	handleOnce(t, daemon, cfg)
 
 	stored := bucket.object("app-online-app.db-20250802T103000Z.db.age")
 	if stored == nil {
@@ -293,16 +298,16 @@ func TestDaemon_Interval(t *testing.T) {
 	})
 
 	t.Run("frequency above cap returns cap", func(t *testing.T) {
-		entries := []activeEntry{{label: "a", frequency: time.Hour}}
+		entries := []s3.Entry{{Label: "a", Frequency: time.Hour}}
 		if got := daemon.interval(entries); got != MaxTickInterval {
 			t.Fatalf("interval() = %v, want %v", got, MaxTickInterval)
 		}
 	})
 
 	t.Run("frequency below cap wins", func(t *testing.T) {
-		entries := []activeEntry{
-			{label: "a", frequency: time.Hour},
-			{label: "b", frequency: time.Minute},
+		entries := []s3.Entry{
+			{Label: "a", Frequency: time.Hour},
+			{Label: "b", Frequency: time.Minute},
 		}
 		if got := daemon.interval(entries); got != time.Minute {
 			t.Fatalf("interval() = %v, want %v", got, time.Minute)
@@ -322,9 +327,7 @@ func TestDaemon_NoBackupYet(t *testing.T) {
 
 	prepareClient(t, daemon, cfg.S3)
 
-	if err := daemon.handle(context.Background(), cfg.S3, daemon.activeEntries(&cfg)); err != nil {
-		t.Fatalf("handle: %v", err)
-	}
+	handleOnce(t, daemon, cfg)
 	if got := bucket.putCount(); got != 0 {
 		t.Fatalf("put count = %d, want 0", got)
 	}
@@ -348,13 +351,11 @@ func TestDaemon_UnknownBackupLabel(t *testing.T) {
 	})
 	daemon := newTestDaemon(cfg)
 
-	// A backup_label that names no entry is dropped by activeEntries, so
+	// A backup_label that names no entry is dropped by ActiveEntries, so
 	// the tick has nothing to put and no error.
 	prepareClient(t, daemon, cfg.S3)
 
-	if err := daemon.handle(context.Background(), cfg.S3, daemon.activeEntries(&cfg)); err != nil {
-		t.Fatalf("handle: %v", err)
-	}
+	handleOnce(t, daemon, cfg)
 	if got := bucket.putCount(); got != 0 {
 		t.Fatalf("put count = %d, want 0", got)
 	}

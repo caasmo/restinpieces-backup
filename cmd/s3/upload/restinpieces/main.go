@@ -1,4 +1,4 @@
-// Command restinpieces is an example of embedding the S3 daemon in
+// Command restinpieces is an example of embedding the S3 upload daemon in
 // a restinpieces application: the app serves its HTTP API and, in the
 // background, puts the newest backups of the configured backup labels
 // to an S3-compatible bucket.
@@ -38,7 +38,7 @@ import (
 	"os"
 
 	"github.com/caasmo/restinpieces"
-	"github.com/caasmo/restinpieces-backup/s3"
+	"github.com/caasmo/restinpieces-backup/s3/upload"
 )
 
 func main() {
@@ -93,17 +93,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	// --- S3 daemon setup ---
+	// --- S3 upload daemon setup ---
 	// New loads and validates the application configuration from the
 	// config store, so the current configuration is already loaded.
 	// The daemon holds the pointer (coreApp.ConfigPointer()) and reads the
 	// backup and s3 configuration at every tick.
-	s3Daemon := s3.New(coreApp.ConfigPointer(), nil)
+	uploadDaemon := upload.New(coreApp.ConfigPointer(), nil)
 
 	// The daemon satisfies the restinpieces server.Daemon interface:
 	// the server starts it with Start() after the HTTP server, and
 	// stops it with Stop() during graceful shutdown.
-	srv.AddDaemon(s3Daemon)
+	srv.AddDaemon(uploadDaemon)
 
 	// Run blocks until SIGINT/SIGQUIT/SIGHUP. SIGINT/SIGQUIT shut the
 	// server and the daemons down gracefully within the configured

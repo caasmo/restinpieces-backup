@@ -1,12 +1,12 @@
-// Package s3 provides the S3 daemon. It copies the newest backup of a
-// configured backup label to an S3-compatible bucket, encrypting it with
-// age when a recipient is configured. The backups are produced by the
-// online and vacuum daemons and found by their filenames; this daemon
-// never opens a database.
+// Package upload provides the S3 upload daemon. It copies the newest
+// backup of a configured backup label to an S3-compatible bucket,
+// encrypting it with age when a recipient is configured. The backups are
+// produced by the online and vacuum daemons and found by their filenames;
+// this daemon never opens a database.
 //
 // Each backup is sent in a single PUT request (the s3 client has no
 // multipart support), so a backup must stay under the 5 GiB S3 limit.
-package s3
+package upload
 
 import (
 	"context"
@@ -23,8 +23,9 @@ import (
 	"filippo.io/age"
 	"github.com/caasmo/go-daemon-runner/daemon"
 	"github.com/caasmo/restinpieces-backup/internal/localcopy"
+	"github.com/caasmo/restinpieces-backup/s3"
 	"github.com/caasmo/restinpieces/config"
-	"github.com/caasmo/restinpieces/s3"
+	s3client "github.com/caasmo/restinpieces/s3"
 )
 
 // Daemon puts backups into S3 on an interval. The first one runs
@@ -36,7 +37,7 @@ import (
 type Daemon struct {
 	daemon.Base
 	cfgPointer *atomic.Pointer[config.Config]
-	s3Client   *s3.S3
+	s3Client   *s3client.S3
 }
 
 // New creates the daemon with the configuration it reads. A nil logger
@@ -64,7 +65,7 @@ func (d *Daemon) Run() error {
 			}
 
 			cfg := d.cfgPointer.Load()
-			entries := d.activeEntries(cfg)
+			entries := s3.ActiveEntries(cfg)
 
 			err := d.handle(d.Ctx, cfg.S3, entries)
 			if err != nil {
@@ -96,58 +97,6 @@ func (d *Daemon) Start() error {
 	return d.Run()
 }
 
-// activeEntry is an ad hoc struct that holds one entry active in
-// the current tick: the label, the fields it needs, and the
-// resolved paths of the backup it points at. It exists so activeEntries
-// can gather the current active entries once and pass them around as one
-// simple value.
-type activeEntry struct {
-	label        string
-	backupLabel  string
-	frequency    time.Duration
-	ageRecipient string
-	sourcePath   string
-	backupDir    string
-}
-
-// activeEntries returns the entries that can run, flattened into a
-// list and resolved so the caller needs nothing else. An entry is left out
-// when its backup_label is empty (deactivated) or when the online or
-// vacuum backup it names is deactivated (no source or destination path).
-// It runs once per tick on the config snapshot and its list is passed to
-// handle and interval, so neither re-checks an entry.
-func (d *Daemon) activeEntries(cfg *config.Config) []activeEntry {
-	var entries []activeEntry
-	for label, entry := range cfg.BackupS3() {
-		if entry.BackupLabel == "" {
-			continue
-		}
-
-		online, inOnline := cfg.BackupOnlineAPI()[entry.BackupLabel]
-		vacuum, inVacuum := cfg.BackupVacuum()[entry.BackupLabel]
-
-		var sourcePath, destPath string
-		if inOnline {
-			sourcePath, destPath = online.SourcePath, online.DestPath
-		} else if inVacuum {
-			sourcePath, destPath = vacuum.SourcePath, vacuum.DestPath
-		}
-		if sourcePath == "" || destPath == "" {
-			continue
-		}
-
-		entries = append(entries, activeEntry{
-			label:        label,
-			backupLabel:  entry.BackupLabel,
-			frequency:    entry.Frequency.Duration,
-			ageRecipient: entry.AgeRecipient,
-			sourcePath:   sourcePath,
-			backupDir:    destPath,
-		})
-	}
-	return entries
-}
-
 // buildS3Client builds the daemon's client from the s3 section. It returns
 // an error when the endpoint is empty, in which case the daemon is
 // deactivated and the tick is skipped. The section is read on every tick,
@@ -158,7 +107,7 @@ func (d *Daemon) buildS3Client(s3Config config.S3) error {
 		return errors.New("s3.endpoint is not configured")
 	}
 
-	d.s3Client = &s3.S3{
+	d.s3Client = &s3client.S3{
 		Endpoint:             s3Config.Endpoint,
 		Region:               s3Config.Region,
 		Bucket:               s3Config.Bucket,
@@ -176,7 +125,7 @@ func (d *Daemon) buildS3Client(s3Config config.S3) error {
 // entry fails, the remaining entries are still tried, and all errors are
 // returned together. The entries are already resolved, so they are not
 // re-checked.
-func (d *Daemon) handle(ctx context.Context, s3Config config.S3, entries []activeEntry) error {
+func (d *Daemon) handle(ctx context.Context, s3Config config.S3, entries []s3.Entry) error {
 	if len(entries) == 0 {
 		d.Logger.Info("No active backup.s3 entries; nothing to do.")
 		return nil
@@ -197,7 +146,7 @@ func (d *Daemon) handle(ctx context.Context, s3Config config.S3, entries []activ
 
 		putErr := d.putOne(ctx, active)
 		if putErr != nil {
-			errs = append(errs, fmt.Errorf("%q: %w", active.label, putErr))
+			errs = append(errs, fmt.Errorf("%q: %w", active.Label, putErr))
 		}
 	}
 	return errors.Join(errs...)
@@ -211,14 +160,14 @@ const MaxTickInterval = 10 * time.Minute
 // interval returns how often the daemon checks for a new backup:
 // the smallest frequency among the entries capped by
 // MaxTickInterval, or MaxTickInterval when the list is empty.
-func (d *Daemon) interval(entries []activeEntry) time.Duration {
+func (d *Daemon) interval(entries []s3.Entry) time.Duration {
 	min := MaxTickInterval
 	for _, active := range entries {
-		if active.frequency <= 0 {
+		if active.Frequency <= 0 {
 			continue // zero means the default
 		}
-		if active.frequency < min {
-			min = active.frequency
+		if active.Frequency < min {
+			min = active.Frequency
 		}
 	}
 	return min
@@ -237,26 +186,26 @@ func s3ObjectKey(backupPath, ageRecipient string) string {
 // putOne puts the newest backup of one entry. It returns nil
 // when there is nothing to do: no backup exists yet, or the backup is
 // already in the bucket.
-func (d *Daemon) putOne(ctx context.Context, active activeEntry) error {
-	backupPath, ok := localcopy.LatestBackupPath(active.backupDir, active.backupLabel, active.sourcePath)
+func (d *Daemon) putOne(ctx context.Context, active s3.Entry) error {
+	backupPath, ok := localcopy.LatestBackupPath(active.BackupDir, active.BackupLabel, active.SourcePath)
 	if !ok {
-		d.Logger.Info("Skipping; no backup yet", "s3", active.label, "backup_label", active.backupLabel)
+		d.Logger.Info("Skipping; no backup yet", "s3", active.Label, "backup_label", active.BackupLabel)
 		return nil
 	}
 
-	key := s3ObjectKey(backupPath, active.ageRecipient)
+	key := s3ObjectKey(backupPath, active.AgeRecipient)
 
 	stored, err := d.isAlreadyStored(ctx, key)
 	if err != nil {
 		return err
 	}
 	if stored {
-		d.Logger.Info("Skipping; backup already in bucket", "s3", active.label, "key", key)
+		d.Logger.Info("Skipping; backup already in bucket", "s3", active.Label, "key", key)
 		return nil
 	}
 
-	if active.ageRecipient != "" {
-		err = d.putEncrypted(ctx, key, backupPath, active.ageRecipient)
+	if active.AgeRecipient != "" {
+		err = d.putEncrypted(ctx, key, backupPath, active.AgeRecipient)
 	} else {
 		err = d.putFile(ctx, key, backupPath)
 	}
@@ -264,7 +213,7 @@ func (d *Daemon) putOne(ctx context.Context, active activeEntry) error {
 		return err
 	}
 
-	d.Logger.Info("Stored backup", "s3", active.label, "key", key)
+	d.Logger.Info("Stored backup", "s3", active.Label, "key", key)
 	return nil
 }
 
@@ -275,7 +224,7 @@ func (d *Daemon) isAlreadyStored(ctx context.Context, key string) (bool, error) 
 	if err == nil {
 		return true, nil
 	}
-	var responseErr *s3.ResponseError
+	var responseErr *s3client.ResponseError
 	if !errors.As(err, &responseErr) {
 		return false, err
 	}
