@@ -163,8 +163,8 @@ func TestDaemon_UploadsFixedPath(t *testing.T) {
 	backdate(t, file, 2*time.Hour)
 
 	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{
-		Path:      file,
-		Frequency: config.Duration{Duration: time.Hour},
+		Path:        file,
+		MinInterval: config.Duration{Duration: time.Hour},
 	})
 	daemon := newTestDaemon(cfg)
 
@@ -193,7 +193,7 @@ func TestDaemon_UploadsLatestUnderPrefix(t *testing.T) {
 	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{
 		PathPrefix:         filepath.Join(dir, "app.db-"),
 		PathPrefixSelector: "latest",
-		Frequency:          config.Duration{Duration: time.Hour},
+		MinInterval:        config.Duration{Duration: time.Hour},
 	})
 	daemon := newTestDaemon(cfg)
 
@@ -217,8 +217,8 @@ func TestDaemon_SkipsNotDue(t *testing.T) {
 	file := writeBackup(t, dir, "app.db", []byte("data"))
 
 	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{
-		Path:      file,
-		Frequency: config.Duration{Duration: time.Hour},
+		Path:        file,
+		MinInterval: config.Duration{Duration: time.Hour},
 	})
 	daemon := newTestDaemon(cfg)
 
@@ -243,8 +243,8 @@ func TestDaemon_SkipsExistingObject(t *testing.T) {
 	bucket.put(s3ObjectKey("app-s3", file, info.ModTime(), ""), []byte("already there"))
 
 	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{
-		Path:      file,
-		Frequency: config.Duration{Duration: time.Hour},
+		Path:        file,
+		MinInterval: config.Duration{Duration: time.Hour},
 	})
 	daemon := newTestDaemon(cfg)
 
@@ -268,7 +268,7 @@ func TestDaemon_EncryptsWithRecipient(t *testing.T) {
 
 	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{
 		Path:         file,
-		Frequency:    config.Duration{Duration: time.Hour},
+		MinInterval:  config.Duration{Duration: time.Hour},
 		AgeRecipient: identity.Recipient().String(),
 	})
 	daemon := newTestDaemon(cfg)
@@ -317,7 +317,7 @@ func TestDaemon_EncryptsWithRequiredContentLength(t *testing.T) {
 
 	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{
 		Path:         file,
-		Frequency:    config.Duration{Duration: time.Hour},
+		MinInterval:  config.Duration{Duration: time.Hour},
 		AgeRecipient: identity.Recipient().String(),
 	})
 	cfg.S3.RequireContentLength = true
@@ -364,7 +364,7 @@ func TestDaemon_NoFileYet(t *testing.T) {
 	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{
 		PathPrefix:         filepath.Join(dir, "app.db-"),
 		PathPrefixSelector: "latest",
-		Frequency:          config.Duration{Duration: time.Hour},
+		MinInterval:        config.Duration{Duration: time.Hour},
 	})
 	daemon := newTestDaemon(cfg)
 
