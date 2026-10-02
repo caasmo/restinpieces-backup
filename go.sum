@@ -12,6 +12,8 @@ github.com/caasmo/go-sqlite-rsync v0.8.0 h1:qiDDQKypdE9BeK+S3vqeXckbD+QNpQ3PZORi
 github.com/caasmo/go-sqlite-rsync v0.8.0/go.mod h1:KaYAIsoC6hYfc0V0nMeo7i7VuHFa5169ur2w4/HXC5w=
 github.com/caasmo/restinpieces v0.38.4 h1:bt+p9w6TdJSEkNHKn/5QjZjzhu4WFvrHP/EvXxug5Tw=
 github.com/caasmo/restinpieces v0.38.4/go.mod h1:pqgm+6Iy2A8IIyWO7P8f10QFZVbWtK6FDt5FpHK/pKo=
+github.com/caasmo/restinpieces v0.38.5 h1:iUBionG3pX/SxLL1pCo1liFnj44uNjh7S5BRD600RLg=
+github.com/caasmo/restinpieces v0.38.5/go.mod h1:pqgm+6Iy2A8IIyWO7P8f10QFZVbWtK6FDt5FpHK/pKo=
 github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf h1:iW4rZ826su+pqaw19uhpSCzhj44qo35pNgKFGqzDKkU=
 github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf/go.mod h1:F5haX7vjVVG0kc13fIWeqUViNPyEJxv/OmvnBo0Yme4=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
