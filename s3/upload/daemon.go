@@ -23,7 +23,6 @@ import (
 	"maps"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -32,27 +31,13 @@ import (
 
 	"filippo.io/age"
 	"github.com/caasmo/go-daemon-runner/daemon"
+	"github.com/caasmo/restinpieces-backup/s3"
 	"github.com/caasmo/restinpieces/config"
 	s3client "github.com/caasmo/restinpieces/s3"
 )
 
 // tickInterval is how often the daemon checks every entry.
 const tickInterval = time.Minute
-
-// backupS3KeyPrefix is the first key segment of every uploaded object:
-//
-//	backup/<label>/<pad>/<filename>[.age]
-//
-// For example, label "app-s3", pad 8209066599 and file app.db:
-//
-//	backup/app-s3/8209066599/app.db
-const backupS3KeyPrefix = "backup"
-
-// maxUnixTimestamp is the newest time the inverted pad encodes:
-// 9999-12-31T23:59:59Z. The pad is maxUnixTimestamp minus the file's
-// modification time, so a bucket listing returns the newest object
-// first.
-const maxUnixTimestamp = 253402300799
 
 // Daemon uploads one file per configured entry to S3. It ticks every
 // minute from startup; an entry is skipped until its min_interval has
@@ -119,27 +104,6 @@ func (d *Daemon) Start() error {
 	return d.Run()
 }
 
-// buildS3Client builds the daemon's client from the s3 section. It returns
-// an error when the endpoint is empty, in which case the daemon is
-// deactivated and the tick is skipped. The section is read on every tick,
-// so a reload of the endpoint or the credentials takes effect before the
-// next run.
-func (d *Daemon) buildS3Client(s3Config config.S3) error {
-	if s3Config.Endpoint == "" {
-		return errors.New("s3.endpoint is not configured")
-	}
-
-	d.s3Client = &s3client.S3{
-		Endpoint:             s3Config.Endpoint,
-		Region:               s3Config.Region,
-		AccessKey:            s3Config.AccessKey,
-		SecretKey:            s3Config.SecretKey,
-		UsePathStyle:         s3Config.UsePathStyle,
-		RequireContentLength: s3Config.RequireContentLength,
-	}
-	return nil
-}
-
 // handle runs one pass over every entry. It logs when the daemon has
 // nothing to do and builds the client from the s3 section for this pass.
 // One failing entry does not stop the others; all errors are returned
@@ -151,11 +115,12 @@ func (d *Daemon) handle(ctx context.Context, cfg *config.Config) error {
 		return nil
 	}
 
-	err := d.buildS3Client(cfg.S3)
+	client, err := s3.NewClient(cfg.S3)
 	if err != nil {
 		d.Logger.Info("s3.endpoint is empty; nothing to do.")
 		return nil
 	}
+	d.s3Client = client
 
 	var errs []error
 	for _, label := range slices.Sorted(maps.Keys(entries)) {
@@ -193,7 +158,12 @@ func (d *Daemon) uploadOne(ctx context.Context, label string, entry config.Backu
 		return nil
 	}
 
-	key := s3ObjectKey(label, filePath, modTime, entry.AgeRecipient)
+	pad := s3.Pad(modTime)
+	name := filepath.Base(filePath)
+	if entry.AgeRecipient != "" {
+		name += ".age"
+	}
+	key := s3.ObjectKey(label, pad, name)
 
 	exists, err := d.objectExists(ctx, entry.Bucket, key)
 	if err != nil {
@@ -263,21 +233,6 @@ func fileToUpload(entry config.BackupS3UploadEntry) (path string, modTime time.T
 		return "", time.Time{}, false
 	}
 	return latestPath, latestTime, true
-}
-
-// s3ObjectKey returns the bucket key for the upload file: the backup
-// prefix, the entry label, the inverted timestamp pad, and the original
-// filename. ".age" is appended when the file is encrypted.
-// Example:
-//
-//	backup/app-s3/8209066599/app.db
-func s3ObjectKey(label, sourcePath string, modTime time.Time, ageRecipient string) string {
-	pad := fmt.Sprintf("%012d", maxUnixTimestamp-modTime.Unix())
-	name := filepath.Base(sourcePath)
-	if ageRecipient != "" {
-		name += ".age"
-	}
-	return path.Join(backupS3KeyPrefix, label, pad, name)
 }
 
 // objectExists reports whether the backup is already in the bucket. A
