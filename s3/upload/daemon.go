@@ -1,6 +1,6 @@
 // Package upload provides the S3 upload daemon. Each configured entry
 // selects one file: a fixed path, or the newest file matching a path
-// prefix. The daemon checks the entry's frequency against the file's
+// prefix. The daemon checks the entry's min_interval against the file's
 // modification time and puts the file to an S3-compatible bucket under
 // the object key backup/<label>/<pad>/<filename>; a file whose object
 // already exists is not uploaded again. When a recipient is configured
@@ -54,12 +54,9 @@ const backupS3KeyPrefix = "backup"
 // first.
 const maxUnixTimestamp = 253402300799
 
-// Daemon puts backups into S3 on an interval. The first one runs
-// immediately at startup, and after that one runs every interval.
-// The interval is the smallest frequency among the entries capped by
-// MaxTickInterval (MaxTickInterval when none is active); it is
-// re-read after every run, so a frequency change on reload takes
-// effect before the next wait.
+// Daemon uploads one file per configured entry to S3. It ticks every
+// minute from startup; an entry is skipped until its min_interval has
+// elapsed since the file's modification time.
 type Daemon struct {
 	daemon.Base
 	cfgPointer *atomic.Pointer[config.Config]
@@ -135,7 +132,6 @@ func (d *Daemon) buildS3Client(s3Config config.S3) error {
 	d.s3Client = &s3client.S3{
 		Endpoint:             s3Config.Endpoint,
 		Region:               s3Config.Region,
-		Bucket:               s3Config.Bucket,
 		AccessKey:            s3Config.AccessKey,
 		SecretKey:            s3Config.SecretKey,
 		UsePathStyle:         s3Config.UsePathStyle,
@@ -177,7 +173,7 @@ func (d *Daemon) handle(ctx context.Context, cfg *config.Config) error {
 	return errors.Join(errs...)
 }
 
-// uploadOne selects the entry's file, checks that the entry's frequency
+// uploadOne selects the entry's file, checks that the entry's min_interval
 // has elapsed since the file's modification time, and puts the file
 // under the inverted timestamp key.
 func (d *Daemon) uploadOne(ctx context.Context, label string, entry config.BackupS3UploadEntry) error {
@@ -199,7 +195,7 @@ func (d *Daemon) uploadOne(ctx context.Context, label string, entry config.Backu
 
 	key := s3ObjectKey(label, filePath, modTime, entry.AgeRecipient)
 
-	exists, err := d.objectExists(ctx, key)
+	exists, err := d.objectExists(ctx, entry.Bucket, key)
 	if err != nil {
 		return err
 	}
@@ -209,9 +205,9 @@ func (d *Daemon) uploadOne(ctx context.Context, label string, entry config.Backu
 	}
 
 	if entry.AgeRecipient != "" {
-		err = d.uploadObjectEncrypted(ctx, key, filePath, entry.AgeRecipient)
+		err = d.uploadObjectEncrypted(ctx, entry.Bucket, key, filePath, entry.AgeRecipient)
 	} else {
-		err = d.uploadObject(ctx, key, filePath)
+		err = d.uploadObject(ctx, entry.Bucket, key, filePath)
 	}
 	if err != nil {
 		return err
@@ -286,8 +282,8 @@ func s3ObjectKey(label, sourcePath string, modTime time.Time, ageRecipient strin
 
 // objectExists reports whether the backup is already in the bucket. A
 // 404 response means it is not there; any other error is returned.
-func (d *Daemon) objectExists(ctx context.Context, key string) (bool, error) {
-	_, err := d.s3Client.HeadObject(ctx, key)
+func (d *Daemon) objectExists(ctx context.Context, bucket, key string) (bool, error) {
+	_, err := d.s3Client.HeadObject(ctx, bucket, key)
 	if err == nil {
 		return true, nil
 	}
@@ -303,7 +299,7 @@ func (d *Daemon) objectExists(ctx context.Context, key string) (bool, error) {
 
 // uploadObject puts one backup without encryption. PutObject closes
 // the file when the request ends.
-func (d *Daemon) uploadObject(ctx context.Context, key, path string) error {
+func (d *Daemon) uploadObject(ctx context.Context, bucket, key, path string) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("failed to open backup: %w", err)
@@ -315,7 +311,7 @@ func (d *Daemon) uploadObject(ctx context.Context, key, path string) error {
 		return errors.Join(fmt.Errorf("failed to stat backup: %w", err), closeErr)
 	}
 
-	putErr := d.s3Client.PutObject(ctx, key, file, info.Size())
+	putErr := d.s3Client.PutObject(ctx, bucket, key, file, info.Size())
 	if putErr != nil {
 		return fmt.Errorf("failed to put %q: %w", key, putErr)
 	}
@@ -331,7 +327,7 @@ func (d *Daemon) uploadObject(ctx context.Context, key, path string) error {
 // standard bridge is an io.Pipe with a goroutine running the producer,
 // unbuffered so memory stays flat. Producer errors travel through
 // CloseWithError, so a failed read aborts the request.
-func (d *Daemon) uploadObjectEncrypted(ctx context.Context, key, path, recipient string) error {
+func (d *Daemon) uploadObjectEncrypted(ctx context.Context, bucket, key, path, recipient string) error {
 	recipientID, err := age.ParseX25519Recipient(recipient)
 	if err != nil {
 		return fmt.Errorf("failed to parse age recipient: %w", err)
@@ -358,7 +354,7 @@ func (d *Daemon) uploadObjectEncrypted(ctx context.Context, key, path, recipient
 		producerErrCh <- producerErr
 	}()
 
-	putErr := d.s3Client.PutObject(ctx, key, pipeReader, contentLength)
+	putErr := d.s3Client.PutObject(ctx, bucket, key, pipeReader, contentLength)
 	// PutObject may return before the body is drained (for example when the
 	// request fails); closing the reader unblocks a producer still writing.
 	_ = pipeReader.Close()

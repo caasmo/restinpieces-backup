@@ -10,15 +10,15 @@
 // mode:
 //
 //	[backup.s3-upload.app-s3]
+//	bucket = "my-backups"
 //	path_prefix = "/path/to/backups/app.db-"
 //	path_prefix_selector = "latest"
-//	frequency = "5m"
+//	min_interval = "5m"
 //	age_recipient = "age1..."
 //
 //	[s3]
 //	endpoint = "https://s3.example.com"
 //	region = "auto"
-//	bucket = "my-backups"
 //	access_key = "..."
 //	secret_key = "..."
 //	use_path_style = true
