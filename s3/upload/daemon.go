@@ -192,8 +192,8 @@ func (d *Daemon) uploadOne(ctx context.Context, label string, entry config.Backu
 	}
 
 	elapsed := time.Since(modTime)
-	if elapsed < entry.Frequency.Duration {
-		d.Logger.Info("Skipping; not due yet", "s3_upload", label, "next_upload_in", entry.Frequency.Duration-elapsed)
+	if elapsed < entry.MinInterval.Duration {
+		d.Logger.Info("Skipping; not due yet", "s3_upload", label, "next_upload_in", entry.MinInterval.Duration-elapsed)
 		return nil
 	}
 
