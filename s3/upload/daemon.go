@@ -1,11 +1,17 @@
-// Package upload provides the S3 upload daemon. It copies the newest
-// backup of a configured backup label to an S3-compatible bucket,
-// encrypting it with age when a recipient is configured. The backups are
-// produced by the online and vacuum daemons and found by their filenames;
-// this daemon never opens a database.
+// Package upload provides the S3 upload daemon. Each configured entry
+// selects one file: a fixed path, or the newest file matching a path
+// prefix. The daemon checks the entry's frequency against the file's
+// modification time and puts the file to an S3-compatible bucket under
+// the object key backup/<label>/<pad>/<filename>; a file whose object
+// already exists is not uploaded again. When a recipient is configured
+// the file is encrypted with age while it is uploaded.
 //
-// Each backup is sent in a single PUT request (the s3 client has no
-// multipart support), so a backup must stay under the 5 GiB S3 limit.
+// The pad is the file's modification time counted down from year 9999
+// and zero-padded, so a bucket listing returns the newest object first.
+// The zero-padded width keeps the pad in its own key segment.
+//
+// Each file is sent in a single PUT request (the s3 client has no
+// multipart support), so a file must stay under the 5 GiB S3 limit.
 package upload
 
 import (
@@ -14,19 +20,39 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"filippo.io/age"
 	"github.com/caasmo/go-daemon-runner/daemon"
-	"github.com/caasmo/restinpieces-backup/internal/localcopy"
-	"github.com/caasmo/restinpieces-backup/s3"
 	"github.com/caasmo/restinpieces/config"
 	s3client "github.com/caasmo/restinpieces/s3"
 )
+
+// tickInterval is how often the daemon checks every entry.
+const tickInterval = time.Minute
+
+// backupS3KeyPrefix is the first key segment of every uploaded object:
+//
+//	backup/<label>/<pad>/<filename>[.age]
+//
+// For example, label "app-s3", pad 8209066599 and file app.db:
+//
+//	backup/app-s3/8209066599/app.db
+const backupS3KeyPrefix = "backup"
+
+// maxUnixTimestamp is the newest time the inverted pad encodes:
+// 9999-12-31T23:59:59Z. The pad is maxUnixTimestamp minus the file's
+// modification time, so a bucket listing returns the newest object
+// first.
+const maxUnixTimestamp = 253402300799
 
 // Daemon puts backups into S3 on an interval. The first one runs
 // immediately at startup, and after that one runs every interval.
@@ -51,35 +77,34 @@ func New(pointer *atomic.Pointer[config.Config], logger *slog.Logger) *Daemon {
 	return d
 }
 
-// Run starts the daemon's goroutine. One run happens immediately at
-// startup (skipped if Stop already fired), then one after each interval.
-// Stop cancels the context, which ends the loop; a request in flight
-// aborts when its current request finishes.
+// Run starts the daemon's goroutine. The first pass runs immediately at
+// startup (skipped if Stop already fired), then one pass every
+// tickInterval. Stop cancels the context, which ends the loop; a request
+// in flight aborts when its current request finishes.
 func (d *Daemon) Run() error {
 	go func() {
 		defer close(d.ShutdownDone)
 
 		for {
 			if err := d.Ctx.Err(); err != nil {
-				return // stopped before the next run
+				return // stopped before the next pass
 			}
 
 			cfg := d.cfgPointer.Load()
-			entries := s3.ActiveEntries(cfg)
 
-			err := d.handle(d.Ctx, cfg.S3, entries)
+			err := d.handle(d.Ctx, cfg)
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
-					d.Logger.Info("put aborted by shutdown")
+					d.Logger.Info("upload aborted by shutdown")
 					return
 				}
-				d.Logger.Error("put failed", "error", err)
+				d.Logger.Error("upload pass failed", "error", err)
 			}
 
 			select {
 			case <-d.Ctx.Done():
 				return
-			case <-time.After(d.interval(entries)):
+			case <-time.After(tickInterval):
 			}
 		}
 	}()
@@ -119,107 +144,149 @@ func (d *Daemon) buildS3Client(s3Config config.S3) error {
 	return nil
 }
 
-// handle runs one pass over every entry in the list. It logs when the
-// daemon is deactivated — no entries, or no S3 endpoint configured — and
-// builds the client from the s3 section for the current tick. When one
-// entry fails, the remaining entries are still tried, and all errors are
-// returned together. The entries are already resolved, so they are not
-// re-checked.
-func (d *Daemon) handle(ctx context.Context, s3Config config.S3, entries []s3.Entry) error {
+// handle runs one pass over every entry. It logs when the daemon has
+// nothing to do and builds the client from the s3 section for this pass.
+// One failing entry does not stop the others; all errors are returned
+// together.
+func (d *Daemon) handle(ctx context.Context, cfg *config.Config) error {
+	entries := cfg.Backup.S3Upload
 	if len(entries) == 0 {
-		d.Logger.Info("No active backup.s3 entries; nothing to do.")
+		d.Logger.Info("No backup.s3-upload entries; nothing to do.")
 		return nil
 	}
 
-	err := d.buildS3Client(s3Config)
+	err := d.buildS3Client(cfg.S3)
 	if err != nil {
 		d.Logger.Info("s3.endpoint is empty; nothing to do.")
 		return nil
 	}
 
 	var errs []error
-	for _, active := range entries {
+	for _, label := range slices.Sorted(maps.Keys(entries)) {
 		ctxErr := ctx.Err()
 		if ctxErr != nil {
 			return ctxErr
 		}
 
-		putErr := d.putOne(ctx, active)
-		if putErr != nil {
-			errs = append(errs, fmt.Errorf("%q: %w", active.Label, putErr))
+		entry := entries[label]
+		uploadErr := d.uploadOne(ctx, label, entry)
+		if uploadErr != nil {
+			errs = append(errs, fmt.Errorf("%q: %w", label, uploadErr))
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// MaxTickInterval caps the tick interval. A frequency larger than
-// this still checks every MaxTickInterval; ticks with no new backup
-// are skipped.
-const MaxTickInterval = 10 * time.Minute
-
-// interval returns how often the daemon checks for a new backup:
-// the smallest frequency among the entries capped by
-// MaxTickInterval, or MaxTickInterval when the list is empty.
-func (d *Daemon) interval(entries []s3.Entry) time.Duration {
-	min := MaxTickInterval
-	for _, active := range entries {
-		if active.Frequency <= 0 {
-			continue // zero means the default
-		}
-		if active.Frequency < min {
-			min = active.Frequency
-		}
+// uploadOne selects the entry's file, checks that the entry's frequency
+// has elapsed since the file's modification time, and puts the file
+// under the inverted timestamp key.
+func (d *Daemon) uploadOne(ctx context.Context, label string, entry config.BackupS3UploadEntry) error {
+	if entry.Path == "" && entry.PathPrefix == "" {
+		return nil // deactivated
 	}
-	return min
-}
 
-// s3ObjectKey returns the object name for a backup: the backup filename at
-// the bucket root, with ".age" appended when the backup is encrypted.
-func s3ObjectKey(backupPath, ageRecipient string) string {
-	key := filepath.Base(backupPath)
-	if ageRecipient != "" {
-		key += ".age"
-	}
-	return key
-}
-
-// putOne puts the newest backup of one entry. It returns nil
-// when there is nothing to do: no backup exists yet, or the backup is
-// already in the bucket.
-func (d *Daemon) putOne(ctx context.Context, active s3.Entry) error {
-	backupPath, ok := localcopy.LatestBackupPath(active.BackupDir, active.BackupLabel, active.SourcePath)
+	filePath, modTime, ok := fileToUpload(entry)
 	if !ok {
-		d.Logger.Info("Skipping; no backup yet", "s3", active.Label, "backup_label", active.BackupLabel)
+		d.Logger.Info("Skipping; no file to upload", "s3_upload", label)
 		return nil
 	}
 
-	key := s3ObjectKey(backupPath, active.AgeRecipient)
+	elapsed := time.Since(modTime)
+	if elapsed < entry.Frequency.Duration {
+		d.Logger.Info("Skipping; not due yet", "s3_upload", label, "next_upload_in", entry.Frequency.Duration-elapsed)
+		return nil
+	}
 
-	stored, err := d.isAlreadyStored(ctx, key)
+	key := s3ObjectKey(label, filePath, modTime, entry.AgeRecipient)
+
+	exists, err := d.objectExists(ctx, key)
 	if err != nil {
 		return err
 	}
-	if stored {
-		d.Logger.Info("Skipping; backup already in bucket", "s3", active.Label, "key", key)
+	if exists {
+		d.Logger.Info("Skipping; backup already in bucket", "s3_upload", label, "key", key)
 		return nil
 	}
 
-	if active.AgeRecipient != "" {
-		err = d.putEncrypted(ctx, key, backupPath, active.AgeRecipient)
+	if entry.AgeRecipient != "" {
+		err = d.uploadObjectEncrypted(ctx, key, filePath, entry.AgeRecipient)
 	} else {
-		err = d.putFile(ctx, key, backupPath)
+		err = d.uploadObject(ctx, key, filePath)
 	}
 	if err != nil {
 		return err
 	}
 
-	d.Logger.Info("Stored backup", "s3", active.Label, "key", key)
+	d.Logger.Info("Stored backup", "s3_upload", label, "key", key)
 	return nil
 }
 
-// isAlreadyStored reports whether the backup is already in the bucket. A
+// fileToUpload returns the file to upload and its modification time: the
+// fixed Path, or the file with the greatest modification time among the
+// names in the prefix's directory that start with its base name. ok is
+// false when the file does not exist or no name matches.
+func fileToUpload(entry config.BackupS3UploadEntry) (path string, modTime time.Time, ok bool) {
+	// --- fixed path ---
+	if entry.Path != "" {
+		info, err := os.Stat(entry.Path)
+		if err != nil {
+			return "", time.Time{}, false
+		}
+		return entry.Path, info.ModTime(), true
+	}
+
+	// --- prefix ---
+	dir := filepath.Dir(entry.PathPrefix)
+	base := filepath.Base(entry.PathPrefix)
+
+	dirEntries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", time.Time{}, false
+	}
+
+	var latestPath string
+	var latestTime time.Time
+	for _, dirEntry := range dirEntries {
+		if dirEntry.IsDir() {
+			continue
+		}
+		if !strings.HasPrefix(dirEntry.Name(), base) {
+			continue
+		}
+		info, infoErr := dirEntry.Info()
+		if infoErr != nil {
+			continue
+		}
+		if latestPath == "" || info.ModTime().After(latestTime) {
+			latestPath = filepath.Join(dir, dirEntry.Name())
+			latestTime = info.ModTime()
+		}
+	}
+
+	if latestPath == "" {
+		return "", time.Time{}, false
+	}
+	return latestPath, latestTime, true
+}
+
+// s3ObjectKey returns the bucket key for the upload file: the backup
+// prefix, the entry label, the inverted timestamp pad, and the original
+// filename. ".age" is appended when the file is encrypted.
+// Example:
+//
+//	backup/app-s3/8209066599/app.db
+func s3ObjectKey(label, sourcePath string, modTime time.Time, ageRecipient string) string {
+	pad := fmt.Sprintf("%012d", maxUnixTimestamp-modTime.Unix())
+	name := filepath.Base(sourcePath)
+	if ageRecipient != "" {
+		name += ".age"
+	}
+	return path.Join(backupS3KeyPrefix, label, pad, name)
+}
+
+// objectExists reports whether the backup is already in the bucket. A
 // 404 response means it is not there; any other error is returned.
-func (d *Daemon) isAlreadyStored(ctx context.Context, key string) (bool, error) {
+func (d *Daemon) objectExists(ctx context.Context, key string) (bool, error) {
 	_, err := d.s3Client.HeadObject(ctx, key)
 	if err == nil {
 		return true, nil
@@ -234,9 +301,9 @@ func (d *Daemon) isAlreadyStored(ctx context.Context, key string) (bool, error) 
 	return false, nil
 }
 
-// putFile puts one backup without encryption. PutObject closes
+// uploadObject puts one backup without encryption. PutObject closes
 // the file when the request ends.
-func (d *Daemon) putFile(ctx context.Context, key, path string) error {
+func (d *Daemon) uploadObject(ctx context.Context, key, path string) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("failed to open backup: %w", err)
@@ -255,7 +322,7 @@ func (d *Daemon) putFile(ctx context.Context, key, path string) error {
 	return nil
 }
 
-// putEncrypted puts one backup encrypted with age. When the S3 provider
+// uploadObjectEncrypted puts one backup encrypted with age. When the S3 provider
 // requires a content length, the encrypted content length is not known in
 // advance, so the backup is encrypted once into io.Discard to learn the
 // content length and then encrypted again while the request is sent.
@@ -264,7 +331,7 @@ func (d *Daemon) putFile(ctx context.Context, key, path string) error {
 // standard bridge is an io.Pipe with a goroutine running the producer,
 // unbuffered so memory stays flat. Producer errors travel through
 // CloseWithError, so a failed read aborts the request.
-func (d *Daemon) putEncrypted(ctx context.Context, key, path, recipient string) error {
+func (d *Daemon) uploadObjectEncrypted(ctx context.Context, key, path, recipient string) error {
 	recipientID, err := age.ParseX25519Recipient(recipient)
 	if err != nil {
 		return fmt.Errorf("failed to parse age recipient: %w", err)

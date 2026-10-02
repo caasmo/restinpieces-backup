@@ -87,7 +87,7 @@ ripc set backup.sqlite-rsync.entries.app-rsync.source_path /path/to/app.db
 
 After that reload the application configuration.
 
-The entry fields are described in the [backup.s3 config section](https://github.com/caasmo/restinpieces/blob/master/doc/backup.md#backups3label--s3).
+The entry fields are described in the [backup.s3-upload config section](https://github.com/caasmo/restinpieces/blob/master/doc/backup.md#backups3-uploadlabel--s3-upload).
 
 ### origin daemon (`cmd/sqlite-rsync/origin/daemon`)
 
@@ -264,18 +264,18 @@ frequency = "24h"
 
 ## S3 upload (`cmd/s3/upload/restinpieces`)
 
-The S3 upload daemon copies the backups produced by the online API and VACUUM methods to an S3-compatible bucket. It finds the newest backup of a configured backup label, checks the bucket, and puts the file if the object is not there yet. When an age recipient is configured the backup is encrypted first, so the bucket never holds the plaintext database.
+The S3 upload daemon copies one file per configured entry to an S3-compatible bucket. An entry names either a fixed file or a path prefix; for a prefix the daemon uploads the newest matching file. It checks the bucket and puts the file only when the object is not there yet. When an age recipient is configured the file is encrypted first, so the bucket never holds the plaintext file.
 
-The object name carries the backup timestamp, so the daemon is safe to restart: it never puts the same backup twice. The bucket settings come from the `[s3]` section and the entries from `[backup.s3]`.
+The object key is `backup/<label>/<pad>/<filename>`, where the pad counts the file's modification time down from year 9999 and is zero-padded, so a bucket listing shows the newest object first and the daemon never uploads the same file twice. The bucket settings come from the `[s3]` section and the entries from `[backup.s3-upload]`.
 
 It embeds the daemon inside a restinpieces application: the daemon reads the backup and S3 configuration from the app's config pointer. The complete, runnable example is in [`main.go`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/s3/upload/restinpieces/main.go): it builds the application, creates the daemon from the app's config pointer, registers it with `srv.AddDaemon`, then runs the server.
 
-Configure which backups to put with the `ripc` tool:
+Configure which files to put with the `ripc` tool:
 
 ```bash
-ripc scaffold backup-s3 app-s3
-ripc set backup.s3.app-s3.backup_label app-online
-ripc set backup.s3.app-s3.age_recipient age1...
+ripc scaffold backup-s3-upload app-s3
+ripc set backup.s3-upload.app-s3.path /data/backups/latest.db
+ripc set backup.s3-upload.app-s3.age_recipient age1...
 ```
 
 After that reload the application configuration.

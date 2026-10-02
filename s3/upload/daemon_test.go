@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"filippo.io/age"
-	"github.com/caasmo/restinpieces-backup/s3"
 	"github.com/caasmo/restinpieces/config"
 )
 
@@ -109,16 +108,12 @@ func prepareClient(t *testing.T, daemon *Daemon, s3Config config.S3) {
 	}
 }
 
-// testConfigFor builds a config with one online entry and one S3 entry
-// whose settings point at the fake bucket.
-func testConfigFor(t *testing.T, serverURL, destDir string, entry config.BackupS3Entry) config.Config {
-	t.Helper()
+// testConfigFor builds a config with one S3 upload entry whose settings
+// point at the fake bucket.
+func testConfigFor(serverURL string, entry config.BackupS3UploadEntry) config.Config {
 	return config.Config{
 		Backup: config.Backup{
-			OnlineAPI: config.BackupOnlineAPI{
-				"app-online": {SourcePath: "/data/app.db", DestPath: destDir, Frequency: config.Duration{Duration: time.Hour}, PagesPerStep: 100},
-			},
-			S3: config.BackupS3{"app-s3": entry},
+			S3Upload: config.BackupS3Upload{"app-s3": entry},
 		},
 		S3: config.S3{Endpoint: serverURL, Region: "test", Bucket: "test-bucket", AccessKey: "ak", SecretKey: "sk", UsePathStyle: true},
 	}
@@ -141,27 +136,35 @@ func writeBackup(t *testing.T, dir, name string, data []byte) string {
 	return path
 }
 
-// handleOnce resolves the config's active entries and runs one daemon
-// pass over them.
+// handleOnce runs one daemon pass over the config's entries.
 func handleOnce(t *testing.T, daemon *Daemon, cfg config.Config) {
 	t.Helper()
-
-	entries := s3.ActiveEntries(&cfg)
-	err := daemon.handle(context.Background(), cfg.S3, entries)
+	err := daemon.handle(context.Background(), &cfg)
 	if err != nil {
 		t.Fatalf("handle: %v", err)
 	}
 }
 
-func TestDaemon_PutNewestBackup(t *testing.T) {
-	server, bucket := startFakeS3(t)
-	destDir := t.TempDir()
-	writeBackup(t, destDir, "app-online-app.db-20250801T103000Z.db", []byte("older"))
-	newest := writeBackup(t, destDir, "app-online-app.db-20250802T103000Z.db", []byte("newest"))
+// backdate sets a file's modification time so the entry's frequency has
+// elapsed.
+func backdate(t *testing.T, path string, age time.Duration) {
+	t.Helper()
+	old := time.Now().Add(-age)
+	err := os.Chtimes(path, old, old)
+	if err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+}
 
-	cfg := testConfigFor(t, server.URL, destDir, config.BackupS3Entry{
-		BackupLabel: "app-online",
-		Frequency:   config.Duration{Duration: time.Hour},
+func TestDaemon_UploadsFixedPath(t *testing.T) {
+	server, bucket := startFakeS3(t)
+	dir := t.TempDir()
+	file := writeBackup(t, dir, "app.db", []byte("data"))
+	backdate(t, file, 2*time.Hour)
+
+	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{
+		Path:      file,
+		Frequency: config.Duration{Duration: time.Hour},
 	})
 	daemon := newTestDaemon(cfg)
 
@@ -169,23 +172,79 @@ func TestDaemon_PutNewestBackup(t *testing.T) {
 
 	handleOnce(t, daemon, cfg)
 
-	if got := bucket.object(filepath.Base(newest)); string(got) != "newest" {
+	info, err := os.Stat(file)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	key := s3ObjectKey("app-s3", file, info.ModTime(), "")
+	if got := bucket.object(key); string(got) != "data" {
+		t.Fatalf("object = %q, want %q", got, "data")
+	}
+}
+
+func TestDaemon_UploadsLatestUnderPrefix(t *testing.T) {
+	server, bucket := startFakeS3(t)
+	dir := t.TempDir()
+	older := writeBackup(t, dir, "app.db-20260101T000000Z.db", []byte("older"))
+	newest := writeBackup(t, dir, "app.db-20260102T000000Z.db", []byte("newest"))
+	backdate(t, older, 3*time.Hour)
+	backdate(t, newest, 2*time.Hour)
+
+	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{
+		PathPrefix:         filepath.Join(dir, "app.db-"),
+		PathPrefixSelector: "latest",
+		Frequency:          config.Duration{Duration: time.Hour},
+	})
+	daemon := newTestDaemon(cfg)
+
+	prepareClient(t, daemon, cfg.S3)
+
+	handleOnce(t, daemon, cfg)
+
+	info, err := os.Stat(newest)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	key := s3ObjectKey("app-s3", newest, info.ModTime(), "")
+	if got := bucket.object(key); string(got) != "newest" {
 		t.Fatalf("object = %q, want %q", got, "newest")
 	}
-	if got := bucket.object("app-online-app.db-20250801T103000Z.db"); got != nil {
-		t.Fatalf("older backup should not be put, got %q", got)
+}
+
+func TestDaemon_SkipsNotDue(t *testing.T) {
+	server, bucket := startFakeS3(t)
+	dir := t.TempDir()
+	file := writeBackup(t, dir, "app.db", []byte("data"))
+
+	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{
+		Path:      file,
+		Frequency: config.Duration{Duration: time.Hour},
+	})
+	daemon := newTestDaemon(cfg)
+
+	prepareClient(t, daemon, cfg.S3)
+
+	handleOnce(t, daemon, cfg)
+	if got := bucket.putCount(); got != 0 {
+		t.Fatalf("put count = %d, want 0", got)
 	}
 }
 
 func TestDaemon_SkipsExistingObject(t *testing.T) {
 	server, bucket := startFakeS3(t)
-	destDir := t.TempDir()
-	writeBackup(t, destDir, "app-online-app.db-20250802T103000Z.db", []byte("newest"))
-	bucket.put("app-online-app.db-20250802T103000Z.db", []byte("already there"))
+	dir := t.TempDir()
+	file := writeBackup(t, dir, "app.db", []byte("newest"))
+	backdate(t, file, 2*time.Hour)
 
-	cfg := testConfigFor(t, server.URL, destDir, config.BackupS3Entry{
-		BackupLabel: "app-online",
-		Frequency:   config.Duration{Duration: time.Hour},
+	info, err := os.Stat(file)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	bucket.put(s3ObjectKey("app-s3", file, info.ModTime(), ""), []byte("already there"))
+
+	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{
+		Path:      file,
+		Frequency: config.Duration{Duration: time.Hour},
 	})
 	daemon := newTestDaemon(cfg)
 
@@ -199,15 +258,16 @@ func TestDaemon_SkipsExistingObject(t *testing.T) {
 
 func TestDaemon_EncryptsWithRecipient(t *testing.T) {
 	server, bucket := startFakeS3(t)
-	destDir := t.TempDir()
-	writeBackup(t, destDir, "app-online-app.db-20250802T103000Z.db", []byte("plaintext"))
+	dir := t.TempDir()
+	file := writeBackup(t, dir, "app.db", []byte("plaintext"))
+	backdate(t, file, 2*time.Hour)
 	identity, err := age.GenerateX25519Identity()
 	if err != nil {
 		t.Fatalf("GenerateX25519Identity: %v", err)
 	}
 
-	cfg := testConfigFor(t, server.URL, destDir, config.BackupS3Entry{
-		BackupLabel:  "app-online",
+	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{
+		Path:         file,
 		Frequency:    config.Duration{Duration: time.Hour},
 		AgeRecipient: identity.Recipient().String(),
 	})
@@ -217,7 +277,11 @@ func TestDaemon_EncryptsWithRecipient(t *testing.T) {
 
 	handleOnce(t, daemon, cfg)
 
-	stored := bucket.object("app-online-app.db-20250802T103000Z.db.age")
+	info, err := os.Stat(file)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	stored := bucket.object(s3ObjectKey("app-s3", file, info.ModTime(), identity.Recipient().String()))
 	if stored == nil {
 		t.Fatal("encrypted object not put")
 	}
@@ -243,15 +307,16 @@ func TestDaemon_EncryptsWithRecipient(t *testing.T) {
 
 func TestDaemon_EncryptsWithRequiredContentLength(t *testing.T) {
 	server, bucket := startFakeS3(t)
-	destDir := t.TempDir()
-	writeBackup(t, destDir, "app-online-app.db-20250802T103000Z.db", []byte("plaintext"))
+	dir := t.TempDir()
+	file := writeBackup(t, dir, "app.db", []byte("plaintext"))
+	backdate(t, file, 2*time.Hour)
 	identity, err := age.GenerateX25519Identity()
 	if err != nil {
 		t.Fatalf("GenerateX25519Identity: %v", err)
 	}
 
-	cfg := testConfigFor(t, server.URL, destDir, config.BackupS3Entry{
-		BackupLabel:  "app-online",
+	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{
+		Path:         file,
 		Frequency:    config.Duration{Duration: time.Hour},
 		AgeRecipient: identity.Recipient().String(),
 	})
@@ -262,7 +327,11 @@ func TestDaemon_EncryptsWithRequiredContentLength(t *testing.T) {
 
 	handleOnce(t, daemon, cfg)
 
-	stored := bucket.object("app-online-app.db-20250802T103000Z.db.age")
+	info, err := os.Stat(file)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	stored := bucket.object(s3ObjectKey("app-s3", file, info.ModTime(), identity.Recipient().String()))
 	if stored == nil {
 		t.Fatal("encrypted object not put")
 	}
@@ -288,40 +357,14 @@ func TestDaemon_EncryptsWithRequiredContentLength(t *testing.T) {
 	}
 }
 
-func TestDaemon_Interval(t *testing.T) {
-	daemon := newTestDaemon(config.Config{})
-
-	t.Run("empty returns cap", func(t *testing.T) {
-		if got := daemon.interval(nil); got != MaxTickInterval {
-			t.Fatalf("interval() = %v, want %v", got, MaxTickInterval)
-		}
-	})
-
-	t.Run("frequency above cap returns cap", func(t *testing.T) {
-		entries := []s3.Entry{{Label: "a", Frequency: time.Hour}}
-		if got := daemon.interval(entries); got != MaxTickInterval {
-			t.Fatalf("interval() = %v, want %v", got, MaxTickInterval)
-		}
-	})
-
-	t.Run("frequency below cap wins", func(t *testing.T) {
-		entries := []s3.Entry{
-			{Label: "a", Frequency: time.Hour},
-			{Label: "b", Frequency: time.Minute},
-		}
-		if got := daemon.interval(entries); got != time.Minute {
-			t.Fatalf("interval() = %v, want %v", got, time.Minute)
-		}
-	})
-}
-
-func TestDaemon_NoBackupYet(t *testing.T) {
+func TestDaemon_NoFileYet(t *testing.T) {
 	server, bucket := startFakeS3(t)
-	destDir := t.TempDir()
+	dir := t.TempDir()
 
-	cfg := testConfigFor(t, server.URL, destDir, config.BackupS3Entry{
-		BackupLabel: "app-online",
-		Frequency:   config.Duration{Duration: time.Hour},
+	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{
+		PathPrefix:         filepath.Join(dir, "app.db-"),
+		PathPrefixSelector: "latest",
+		Frequency:          config.Duration{Duration: time.Hour},
 	})
 	daemon := newTestDaemon(cfg)
 
@@ -338,25 +381,5 @@ func TestDaemon_NoEndpoint(t *testing.T) {
 
 	if err := daemon.buildS3Client(config.S3{}); err == nil {
 		t.Fatal("buildS3Client: expected error when s3.endpoint is empty")
-	}
-}
-
-func TestDaemon_UnknownBackupLabel(t *testing.T) {
-	server, bucket := startFakeS3(t)
-	destDir := t.TempDir()
-
-	cfg := testConfigFor(t, server.URL, destDir, config.BackupS3Entry{
-		BackupLabel: "missing",
-		Frequency:   config.Duration{Duration: time.Hour},
-	})
-	daemon := newTestDaemon(cfg)
-
-	// A backup_label that names no entry is dropped by ActiveEntries, so
-	// the tick has nothing to put and no error.
-	prepareClient(t, daemon, cfg.S3)
-
-	handleOnce(t, daemon, cfg)
-	if got := bucket.putCount(); got != 0 {
-		t.Fatalf("put count = %d, want 0", got)
 	}
 }

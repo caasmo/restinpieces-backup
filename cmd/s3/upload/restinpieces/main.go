@@ -1,21 +1,17 @@
 // Command restinpieces is an example of embedding the S3 upload daemon in
 // a restinpieces application: the app serves its HTTP API and, in the
-// background, puts the newest backups of the configured backup labels
-// to an S3-compatible bucket.
+// background, uploads the configured files to an S3-compatible bucket.
 //
 // The daemon reads the [backup] and [s3] sections of the application
-// configuration from the running app, so it needs no
-// configuration of its own. The entries are configured like the rest of
+// configuration from the running app, so it needs no configuration of its
+// own. An entry names either a fixed file or a path prefix; a prefix
+// entry uploads its newest matching file. Configure it like the rest of
 // the application configuration, with the tables ripc scaffolds for app
 // mode:
 //
-//	[backup.online.app-online]
-//	source_path = "/path/to/db"
-//	dest_path = "/path/to/backups"
-//	frequency = "24h"
-//
-//	[backup.s3.app-s3]
-//	backup_label = "app-online"
+//	[backup.s3-upload.app-s3]
+//	path_prefix = "/path/to/backups/app.db-"
+//	path_prefix_selector = "latest"
 //	frequency = "5m"
 //	age_recipient = "age1..."
 //
@@ -27,8 +23,8 @@
 //	secret_key = "..."
 //	use_path_style = true
 //
-// A SIGHUP reload of the application configuration is visible at the
-// next daemon tick.
+// A SIGHUP reload of the application configuration is visible at the next
+// daemon tick.
 package main
 
 import (
