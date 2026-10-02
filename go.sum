@@ -14,6 +14,8 @@ github.com/caasmo/restinpieces v0.38.1 h1:QXd2palN6o9sYqik+ZoIroV2GG47aQH3mXPCaR
 github.com/caasmo/restinpieces v0.38.1/go.mod h1:pqgm+6Iy2A8IIyWO7P8f10QFZVbWtK6FDt5FpHK/pKo=
 github.com/caasmo/restinpieces v0.38.2 h1:DlsP52MWqP9yqXCz0CYWIRYim0glee4PbrB1DBHBtoo=
 github.com/caasmo/restinpieces v0.38.2/go.mod h1:pqgm+6Iy2A8IIyWO7P8f10QFZVbWtK6FDt5FpHK/pKo=
+github.com/caasmo/restinpieces v0.38.3 h1:zOsMhJrqVEcps42WCeRzgnwfBOyb04In3oa/2DA+Ehw=
+github.com/caasmo/restinpieces v0.38.3/go.mod h1:pqgm+6Iy2A8IIyWO7P8f10QFZVbWtK6FDt5FpHK/pKo=
 github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf h1:iW4rZ826su+pqaw19uhpSCzhj44qo35pNgKFGqzDKkU=
 github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf/go.mod h1:F5haX7vjVVG0kc13fIWeqUViNPyEJxv/OmvnBo0Yme4=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
