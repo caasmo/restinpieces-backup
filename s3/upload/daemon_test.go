@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"filippo.io/age"
+	"github.com/caasmo/restinpieces-backup/s3"
 	"github.com/caasmo/restinpieces/config"
 )
 
@@ -99,15 +100,6 @@ func newTestDaemon(cfg config.Config) *Daemon {
 	return New(&pointer, logger)
 }
 
-// prepareClient builds the daemon's S3 client from the test config,
-// failing the test when the config has no endpoint.
-func prepareClient(t *testing.T, daemon *Daemon, s3Config config.S3) {
-	t.Helper()
-	if err := daemon.buildS3Client(s3Config); err != nil {
-		t.Fatalf("buildS3Client: %v", err)
-	}
-}
-
 // testConfigFor builds a config with one S3 upload entry whose settings
 // point at the fake bucket.
 func testConfigFor(serverURL string, entry config.BackupS3UploadEntry) config.Config {
@@ -117,6 +109,16 @@ func testConfigFor(serverURL string, entry config.BackupS3UploadEntry) config.Co
 		},
 		S3: config.S3{Endpoint: serverURL, Region: "test", AccessKey: "ak", SecretKey: "sk", UsePathStyle: true},
 	}
+}
+
+// objectKey builds the bucket key the daemon is expected to write for the
+// file, through the shared key layout.
+func objectKey(label, filePath string, modTime time.Time, ageRecipient string) string {
+	name := filepath.Base(filePath)
+	if ageRecipient != "" {
+		name += ".age"
+	}
+	return s3.ObjectKey(label, s3.Pad(modTime), name)
 }
 
 func startFakeS3(t *testing.T) (*httptest.Server, *fakeS3) {
@@ -169,15 +171,13 @@ func TestDaemon_UploadsFixedPath(t *testing.T) {
 	})
 	daemon := newTestDaemon(cfg)
 
-	prepareClient(t, daemon, cfg.S3)
-
 	handleOnce(t, daemon, cfg)
 
 	info, err := os.Stat(file)
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	key := s3ObjectKey("app-s3", file, info.ModTime(), "")
+	key := objectKey("app-s3", file, info.ModTime(), "")
 	if got := bucket.object(key); string(got) != "data" {
 		t.Fatalf("object = %q, want %q", got, "data")
 	}
@@ -199,15 +199,13 @@ func TestDaemon_UploadsLatestUnderPrefix(t *testing.T) {
 	})
 	daemon := newTestDaemon(cfg)
 
-	prepareClient(t, daemon, cfg.S3)
-
 	handleOnce(t, daemon, cfg)
 
 	info, err := os.Stat(newest)
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	key := s3ObjectKey("app-s3", newest, info.ModTime(), "")
+	key := objectKey("app-s3", newest, info.ModTime(), "")
 	if got := bucket.object(key); string(got) != "newest" {
 		t.Fatalf("object = %q, want %q", got, "newest")
 	}
@@ -225,8 +223,6 @@ func TestDaemon_SkipsNotDue(t *testing.T) {
 	})
 	daemon := newTestDaemon(cfg)
 
-	prepareClient(t, daemon, cfg.S3)
-
 	handleOnce(t, daemon, cfg)
 	if got := bucket.putCount(); got != 0 {
 		t.Fatalf("put count = %d, want 0", got)
@@ -243,7 +239,7 @@ func TestDaemon_SkipsExistingObject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	bucket.put(s3ObjectKey("app-s3", file, info.ModTime(), ""), []byte("already there"))
+	bucket.put(objectKey("app-s3", file, info.ModTime(), ""), []byte("already there"))
 
 	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{
 		Bucket:      "test-bucket",
@@ -251,8 +247,6 @@ func TestDaemon_SkipsExistingObject(t *testing.T) {
 		MinInterval: config.Duration{Duration: time.Hour},
 	})
 	daemon := newTestDaemon(cfg)
-
-	prepareClient(t, daemon, cfg.S3)
 
 	handleOnce(t, daemon, cfg)
 	if got := bucket.putCount(); got != 0 {
@@ -278,15 +272,13 @@ func TestDaemon_EncryptsWithRecipient(t *testing.T) {
 	})
 	daemon := newTestDaemon(cfg)
 
-	prepareClient(t, daemon, cfg.S3)
-
 	handleOnce(t, daemon, cfg)
 
 	info, err := os.Stat(file)
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	stored := bucket.object(s3ObjectKey("app-s3", file, info.ModTime(), identity.Recipient().String()))
+	stored := bucket.object(objectKey("app-s3", file, info.ModTime(), identity.Recipient().String()))
 	if stored == nil {
 		t.Fatal("encrypted object not put")
 	}
@@ -329,15 +321,13 @@ func TestDaemon_EncryptsWithRequiredContentLength(t *testing.T) {
 	cfg.S3.RequireContentLength = true
 	daemon := newTestDaemon(cfg)
 
-	prepareClient(t, daemon, cfg.S3)
-
 	handleOnce(t, daemon, cfg)
 
 	info, err := os.Stat(file)
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	stored := bucket.object(s3ObjectKey("app-s3", file, info.ModTime(), identity.Recipient().String()))
+	stored := bucket.object(objectKey("app-s3", file, info.ModTime(), identity.Recipient().String()))
 	if stored == nil {
 		t.Fatal("encrypted object not put")
 	}
@@ -375,18 +365,8 @@ func TestDaemon_NoFileYet(t *testing.T) {
 	})
 	daemon := newTestDaemon(cfg)
 
-	prepareClient(t, daemon, cfg.S3)
-
 	handleOnce(t, daemon, cfg)
 	if got := bucket.putCount(); got != 0 {
 		t.Fatalf("put count = %d, want 0", got)
-	}
-}
-
-func TestDaemon_NoEndpoint(t *testing.T) {
-	daemon := newTestDaemon(config.Config{})
-
-	if err := daemon.buildS3Client(config.S3{}); err == nil {
-		t.Fatal("buildS3Client: expected error when s3.endpoint is empty")
 	}
 }
