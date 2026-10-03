@@ -23,7 +23,7 @@ It also provides pure Go rsync and sftp clients ([`cmd/rsync`](https://github.co
 | rsync pull client | remote backup, delta-based | pulls the `latest-*.db` snapshots over SSH | [`cmd/rsync`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/rsync) |
 | sftp pull client | remote backup | pulls the newest snapshot over SFTP | [`cmd/sftp`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/sftp) |
 | S3 upload | remote backup, offsite | puts the newest backup into an S3-compatible bucket, encrypting it with age | [`cmd/s3/upload/restinpieces`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/s3/upload/restinpieces) |
-| S3 recover | restore new machine | restores per `[backup.s3-upload]` (decrypts, picks the app database) | [`cmd/s3/download/recover`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/s3/download/recover) |
+| S3 download | distributed pull | pulls the newest backup for a label per configured entry from an S3-compatible bucket | [`cmd/s3/download/recover`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/s3/download/recover) |
 
 For point-in-time restores and syncing to S3 and other object stores, see [restinpieces-litestream](https://github.com/caasmo/restinpieces-litestream).
 
@@ -52,7 +52,7 @@ For point-in-time restores and syncing to S3 and other object stores, see [resti
     - [Build](#build-3)
     - [Configuration](#configuration-2)
 - [S3 upload (`cmd/s3/upload/restinpieces`)](#s3-upload-cmds3uploadrestinpieces)
-- [S3 recover (`cmd/s3/download/recover`)](#s3-recover-cmds3downloadrecover)
+- [S3 download (`cmd/s3/download/recover`)](#s3-download-cmds3downloadrecover)
 - [rsync (`cmd/rsync`)](#rsync-cmdrsync)
   - [rsync one-shot (`cmd/rsync/oneshot`)](#rsync-one-shot-cmdrsynconeshot)
     - [Build](#build-4)
@@ -283,9 +283,9 @@ ripc set backup.s3-upload.app-s3.age_recipient age1...
 
 After that reload the application configuration.
 
-## S3 recover (`cmd/s3/download/recover`)
+## S3 download (`cmd/s3/download/recover`)
 
-The S3 recover command restores the databases backed up to S3 onto a machine that has no data yet. It reads `[s3]` and `[backup.s3-upload]` from `config.toml` in the project home, downloads the newest object per upload entry into the dir it came from, decrypts with `age.key`, picks the file `ripc` reads, and moves it to `data/app.db`. Takes no flags; run from the project home.
+The S3 recover command is the implementation of the download method. It restores the databases backed up to S3 onto a machine that has no data yet. It reads `[s3]` and `[backup.s3-upload]` from `config.toml` in the project home, downloads the newest object per upload entry into the dir it came from, decrypts with `age.key`, picks the file `ripc` reads, and moves it to `data/app.db`. Takes no flags; run from the project home.
 
 Build and run it:
 
