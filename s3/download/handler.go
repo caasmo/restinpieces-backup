@@ -31,13 +31,13 @@ const (
 	// JobTypeS3Download is the job type this handler registers under.
 	JobTypeS3Download = "s3_download"
 
-	// destFileNamePrefix is the constant start of every dest download name:
-	// s3download-.
-	destFileNamePrefix = "s3download-"
+	// DestFileNamePrefix is the constant start of every dest download
+	// name: s3download-.
+	DestFileNamePrefix = "s3download-"
 
 	// destFileNameFmt renders the dest file name of a downloaded backup:
 	// s3download-<label>-<pad>-<name>.
-	destFileNameFmt = destFileNamePrefix + "%s-%s-%s"
+	destFileNameFmt = DestFileNamePrefix + "%s-%s-%s"
 )
 
 // Handler downloads one object per configured entry from S3. It is a job
@@ -195,7 +195,7 @@ func lastDestFileDownloadTime(dir, prefix string) (time.Time, bool) {
 // buildDestFilePrefix returns the start of label's dest file names:
 // s3download-<label>-.
 func buildDestFilePrefix(label string) string {
-	return destFileNamePrefix + label + "-"
+	return DestFileNamePrefix + label + "-"
 }
 
 // buildDestFilePath returns the dest path of the downloaded backup:
