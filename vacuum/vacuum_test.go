@@ -11,17 +11,9 @@ import (
 	"time"
 
 	"github.com/caasmo/restinpieces/config"
+	"github.com/caasmo/restinpieces/db"
 	_ "modernc.org/sqlite"
 )
-
-// testCfg is a config pointer payload satisfying VacuumConfig for tests.
-type testCfg struct {
-	backup config.Backup
-}
-
-func (c testCfg) BackupVacuum() config.BackupVacuum {
-	return c.backup.Vacuum
-}
 
 // createUsersDB creates a database file holding a users table, with
 // one row when withData is true.
@@ -52,12 +44,12 @@ func TestVacuumStrategy_EntriesAndCopy(t *testing.T) {
 	sourcePath := filepath.Join(t.TempDir(), "source.db")
 	createUsersDB(t, sourcePath, true)
 
-	cfg := config.Backup{Vacuum: config.BackupVacuum{
+	cfg := config.Config{Backup: config.Backup{Vacuum: config.BackupVacuum{
 		"app": {SourcePath: sourcePath, DestPath: t.TempDir(), Frequency: config.Duration{Duration: 24 * time.Hour}, Compression: true},
-	}}
-	pointer := new(atomic.Pointer[testCfg])
-	pointer.Store(&testCfg{backup: cfg})
-	strategy := &VacuumStrategy[testCfg]{cfgPointer: pointer}
+	}}}
+	pointer := new(atomic.Pointer[config.Config])
+	pointer.Store(&cfg)
+	strategy := &VacuumStrategy{cfgPointer: pointer}
 
 	entries := strategy.Entries()
 	if len(entries) != 1 {
@@ -111,39 +103,31 @@ func TestVacuumStrategy_EntriesAndCopy(t *testing.T) {
 	}
 }
 
-func TestNew_DaemonRunStop(t *testing.T) {
+// TestHandler_HandleCreatesBackup runs one scheduled pass through the
+// handler: the entry never ran before, so it is due and a snapshot
+// appears in the destination directory.
+func TestHandler_HandleCreatesBackup(t *testing.T) {
 	sourcePath := filepath.Join(t.TempDir(), "source.db")
 	createUsersDB(t, sourcePath, true)
 	backupDir := t.TempDir()
 
-	cfg := config.Backup{Vacuum: config.BackupVacuum{
+	cfg := config.Config{Backup: config.Backup{Vacuum: config.BackupVacuum{
 		"app": {SourcePath: sourcePath, DestPath: backupDir, Frequency: config.Duration{Duration: time.Hour}},
-	}}
-	pointer := new(atomic.Pointer[testCfg])
-	pointer.Store(&testCfg{backup: cfg})
-	d := New[testCfg](pointer, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	}}}
+	pointer := new(atomic.Pointer[config.Config])
+	pointer.Store(&cfg)
+	handler := New(pointer, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	defer handler.ClosePools()
 
-	if err := d.Run(); err != nil {
-		t.Fatalf("Run: %v", err)
+	if err := handler.Handle(context.Background(), db.Job{}); err != nil {
+		t.Fatalf("Handle: %v", err)
 	}
 
-	// The first copy runs immediately at startup: wait for a backup
-	// file to appear.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		entries, readErr := os.ReadDir(backupDir)
-		if readErr == nil && len(entries) > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("backup was not created by the startup copy")
-		}
-		time.Sleep(10 * time.Millisecond)
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := d.Stop(ctx); err != nil {
-		t.Fatalf("Stop: %v", err)
+	if len(entries) == 0 {
+		t.Fatal("no backup file created by the pass")
 	}
 }

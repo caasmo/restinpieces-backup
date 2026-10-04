@@ -16,15 +16,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// testCfg is a config pointer payload satisfying OnlineApiConfig for tests.
-type testCfg struct {
-	backup config.Backup
-}
-
-func (c testCfg) BackupOnlineAPI() config.BackupOnlineAPI {
-	return c.backup.OnlineAPI
-}
-
 // createUsersDB creates a database file holding a users table, with
 // one row when withData is true.
 func createUsersDB(t *testing.T, path string, withData bool) {
@@ -54,13 +45,13 @@ func TestOnlineApiStrategy_EntriesAndCopy(t *testing.T) {
 	sourcePath := filepath.Join(t.TempDir(), "source.db")
 	createUsersDB(t, sourcePath, true)
 
-	cfg := config.Backup{OnlineAPI: config.BackupOnlineAPI{
+	cfg := config.Config{Backup: config.Backup{OnlineAPI: config.BackupOnlineAPI{
 		"app": {SourcePath: sourcePath, DestPath: t.TempDir(), Frequency: config.Duration{Duration: 24 * time.Hour}, PagesPerStep: 100, SleepInterval: config.Duration{Duration: 10 * time.Millisecond}},
-	}}
-	pointer := new(atomic.Pointer[testCfg])
-	pointer.Store(&testCfg{backup: cfg})
+	}}}
+	pointer := new(atomic.Pointer[config.Config])
+	pointer.Store(&cfg)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	strategy := &OnlineApiStrategy[testCfg]{cfgPointer: pointer, logger: logger}
+	strategy := &OnlineApiStrategy{cfgPointer: pointer, logger: logger}
 
 	entries := strategy.Entries()
 	if len(entries) != 1 {
@@ -130,13 +121,13 @@ func TestModuloLogger_Log(t *testing.T) {
 		t.Fatalf("db.Close: %v", err)
 	}
 
-	cfg := config.Backup{OnlineAPI: config.BackupOnlineAPI{
+	cfg := config.Config{Backup: config.Backup{OnlineAPI: config.BackupOnlineAPI{
 		"source": {SourcePath: sourcePath, DestPath: t.TempDir(), Frequency: config.Duration{Duration: 24 * time.Hour}, PagesPerStep: 1, SleepInterval: config.Duration{Duration: 10 * time.Millisecond}},
-	}}
-	pointer := new(atomic.Pointer[testCfg])
-	pointer.Store(&testCfg{backup: cfg})
+	}}}
+	pointer := new(atomic.Pointer[config.Config])
+	pointer.Store(&cfg)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	strategy := &OnlineApiStrategy[testCfg]{cfgPointer: pointer, logger: logger}
+	strategy := &OnlineApiStrategy{cfgPointer: pointer, logger: logger}
 
 	entries := strategy.Entries()
 	destPath := filepath.Join(entries[0].DestPath, "out.db")

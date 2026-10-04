@@ -18,26 +18,22 @@ import (
 	"modernc.org/sqlite"
 )
 
-// OnlineApiConfig is the config pointer payload contract: any type exposing the
-// online entries satisfies it. config.Config and the standalone
-// onlineapiCfg both implement it.
-type OnlineApiConfig interface {
-	BackupOnlineAPI() config.BackupOnlineAPI
-}
+// JobTypeOnline is the job type this handler registers under.
+const JobTypeOnline = "online"
 
-// OnlineApiStrategy reads the online map from the config pointer on every
-// call and copies databases with the Online Backup API. The tuning
-// fields (pages_per_step, sleep_interval) are read per entry from the
-// box at copy time — they never enter the shared Entry shape.
-type OnlineApiStrategy[T OnlineApiConfig] struct {
-	cfgPointer *atomic.Pointer[T]
+// OnlineApiStrategy reads the online map from the config pointer on
+// every call and copies databases with the Online Backup API. The
+// tuning fields (pages_per_step, sleep_interval) are read per entry
+// from the box at copy time — they never enter the shared Entry shape.
+type OnlineApiStrategy struct {
+	cfgPointer *atomic.Pointer[config.Config]
 	logger     *slog.Logger
 }
 
 // Entries returns the configured online entries in the common shape.
-func (s *OnlineApiStrategy[T]) Entries() []localcopy.Entry {
+func (s *OnlineApiStrategy) Entries() []localcopy.Entry {
 	var out []localcopy.Entry
-	for key, f := range (*s.cfgPointer.Load()).BackupOnlineAPI() {
+	for key, f := range (*s.cfgPointer.Load()).Backup.OnlineAPI {
 		out = append(out, localcopy.Entry{
 			Label:       key,
 			SourcePath:  f.SourcePath,
@@ -51,8 +47,8 @@ func (s *OnlineApiStrategy[T]) Entries() []localcopy.Entry {
 
 // Copy performs one online backup copy of the source database using
 // the entry's pages_per_step and sleep_interval.
-func (s *OnlineApiStrategy[T]) Copy(ctx context.Context, srcConn *sql.Conn, destPath string, entry localcopy.Entry) error {
-	f := (*s.cfgPointer.Load()).BackupOnlineAPI()[entry.Label] // full config, per entry
+func (s *OnlineApiStrategy) Copy(ctx context.Context, srcConn *sql.Conn, destPath string, entry localcopy.Entry) error {
+	f := (*s.cfgPointer.Load()).Backup.OnlineAPI[entry.Label] // full config, per entry
 	pagesPerStep := f.PagesPerStep
 	sleepInterval := f.SleepInterval.Duration // 0 is valid: no throttling
 
@@ -110,14 +106,15 @@ func (s *OnlineApiStrategy[T]) Copy(ctx context.Context, srcConn *sql.Conn, dest
 	}
 }
 
-// New creates the onlineapi daemon around the config pointer. The daemon
-// reads the box on every tick, so a configuration reload is visible
-// at the next tick. A nil logger falls back to slog.Default().
-func New[T OnlineApiConfig](pointer *atomic.Pointer[T], logger *slog.Logger) *localcopy.Daemon {
+// New creates the onlineapi job handler around the config pointer. The
+// handler reads the box on every run, so a configuration reload is
+// visible at the next scheduled run. A nil logger falls back to
+// slog.Default().
+func New(pointer *atomic.Pointer[config.Config], logger *slog.Logger) *localcopy.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return localcopy.New("OnlineApiDaemon", &OnlineApiStrategy[T]{cfgPointer: pointer, logger: logger}, logger)
+	return localcopy.NewHandler(&OnlineApiStrategy{cfgPointer: pointer, logger: logger}, logger)
 }
 
 // destURI builds the file: URI for a backup destination path. The

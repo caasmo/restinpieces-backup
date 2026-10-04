@@ -1,5 +1,5 @@
 // Package localcopy provides the shared snapshot engine used by the
-// vacuum and onlineapi daemons. It runs one copy cycle over the
+// vacuum and onlineapi jobs. It runs one copy cycle over the
 // strategy's configured entries: check due, verify paths, copy the
 // database through the strategy, atomically promote the result, and
 // refresh the latest hardlink.
@@ -133,8 +133,7 @@ type Strategy interface {
 }
 
 // Engine runs the shared copy pipeline over a strategy's entries.
-// handle is its testable core; daemon.go adds the go-daemon-runner
-// lifecycle.
+// handle is its testable core; Handler adds the job entry point.
 //
 // One pool per source file. The pool itself holds no FD; a connection
 // from it does. With SetConnMaxIdleTime the pool frees the FD of
@@ -146,8 +145,7 @@ type Engine struct {
 }
 
 // NewEngine creates the engine around the strategy. A nil logger
-// falls back to slog.Default(), mirroring the daemon constructors
-// (daemon.NewBase, New).
+// falls back to slog.Default().
 func NewEngine(strategy Strategy, logger *slog.Logger) *Engine {
 	if logger == nil {
 		logger = slog.Default()
@@ -155,8 +153,7 @@ func NewEngine(strategy Strategy, logger *slog.Logger) *Engine {
 	return &Engine{strategy: strategy, logger: logger, pools: make(map[string]*sql.DB)}
 }
 
-// ClosePools closes all pools. Call on daemon shutdown; each tick
-// only returns the connection, the pool lives on.
+// ClosePools closes all pools. Call on shutdown; each pass only returns the connection, the pool lives on.
 func (e *Engine) ClosePools() {
 	for _, db := range e.pools {
 		_ = db.Close()
@@ -240,7 +237,7 @@ func (e *Engine) handle(ctx context.Context, now time.Time) error {
 // handleFile runs one backup copy for one entry.
 //
 // No integrity check is performed here. This is a conscious choice:
-// the daemon's job is only to produce a snapshot and atomically
+// the handler's job is only to produce a snapshot and atomically
 // promote it; the client on the other machine verifies the file
 // (even before download) and is the single source of truth for
 // validity.
@@ -431,7 +428,7 @@ func (e *Engine) linkLatest(backupPath, latestPath string) error {
 // dbPath would be misread by SQLite's URI parser as query or fragment
 // (this is the sqlite convention). For a WAL-mode source, the
 // read-only open needs the -shm file readable or the source directory
-// writable (wal.html); the daemon runs on the same host as the source,
+// writable (wal.html); the job runs on the same host as the source,
 // so this holds in the live-writer, clean-close, and leftover -wal
 // states alike, and any failure is logged and retried next tick.
 func sourceDSN(dbPath string) string {

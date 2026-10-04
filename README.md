@@ -43,12 +43,12 @@ For point-in-time restores and syncing to S3 and other object stores, see [resti
     - [Security](#security)
 - [online API (`cmd/onlineapi`)](#online-api-cmdonlineapi)
   - [restinpieces integration (`cmd/onlineapi/restinpieces`)](#restinpieces-integration-cmdonlineapirestinpieces)
-  - [standalone daemon (`cmd/onlineapi/daemon`)](#standalone-daemon-cmdonlineapidaemon)
+  - [one-shot (`cmd/onlineapi/oneshot`)](#one-shot-cmdonlineapioneshot)
     - [Build](#build-2)
     - [Configuration](#configuration-1)
 - [VACUUM (`cmd/vacuum`)](#vacuum-cmdvacuum)
   - [restinpieces integration (`cmd/vacuum/restinpieces`)](#restinpieces-integration-cmdvacuumrestinpieces)
-  - [standalone daemon (`cmd/vacuum/daemon`)](#standalone-daemon-cmdvacuumdaemon)
+  - [one-shot (`cmd/vacuum/oneshot`)](#one-shot-cmdvacuumoneshot)
     - [Build](#build-3)
     - [Configuration](#configuration-2)
 - [S3 upload (`cmd/s3/upload/restinpieces`)](#s3-upload-cmds3uploadrestinpieces)
@@ -182,11 +182,11 @@ In SSH mode the client loads the SSH keys into memory once at startup. It runs w
 
 The [Online Backup API](https://www.sqlite.org/backup.html) is SQLite's built-in way to copy a live database: the copy runs while the database keeps being written, so a backup never blocks the application.
 
-This repository ships the Online Backup API in two forms: a [restinpieces framework implementation](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/onlineapi/restinpieces) that registers the daemon inside a restinpieces app, and a standalone [daemon](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/onlineapi/daemon) that runs outside restinpieces.
+This repository ships the Online Backup API in two forms: a restinpieces job for app mode and a one-shot command for other machines.
 
 ### restinpieces integration (`cmd/onlineapi/restinpieces`)
 
-It embeds the onlineapi daemon inside a restinpieces application: the daemon produces snapshots of the databases configured in the backup section. The complete, runnable example is in [`main.go`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/onlineapi/restinpieces/main.go): it builds the application, creates the onlineapi daemon from the app's config pointer, registers it with `srv.AddDaemon`, then runs the server.
+It embeds the onlineapi job inside a restinpieces application: the handler produces snapshots of the databases configured in the backup section. The complete, runnable example is in [`main.go`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/onlineapi/restinpieces/main.go): it builds the application, creates the handler from the app's config pointer, registers it with `srv.AddJobHandler`, then runs the server. The scheduler runs the handler on the interval of the `[scheduler.jobs]` entry whose `job_type` is `online`; an entry is backed up only when its `frequency` has elapsed.
 
 Configure which databases to back up with the `ripc` tool:
 
@@ -195,23 +195,25 @@ ripc scaffold backup-online app-online
 ripc set backup.online.app-online.source_path /path/to/db
 ```
 
-A SIGHUP reload of the application configuration is visible at the next daemon tick.
+A SIGHUP reload of the application configuration is visible at the next scheduled run.
 
-### standalone daemon (`cmd/onlineapi/daemon`)
+### one-shot (`cmd/onlineapi/oneshot`)
 
-A Go daemon running the Online Backup API outside restinpieces, on any machine that holds live databases. It copies each database into a local backup directory while the database keeps being written, producing a snapshot at a fixed interval and updating a hard link to the last snapshot.
+A Go command running the Online Backup API outside restinpieces, on any machine that holds live databases. It copies each database into a local backup directory while the database keeps being written, producing a snapshot and updating a hard link to the last snapshot.
 
 The rsync and sftp commands use that link as their sync target.
 
 #### Build
 
 ```bash
-go build -o onlineapi ./cmd/onlineapi/daemon
+go build -o onlineapi ./cmd/onlineapi/oneshot
 ```
+
+The command runs one pass over every due database and exits: exit code 0 means the pass succeeded, 1 means a step failed. Run it from a cron job or a systemd timer.
 
 #### Configuration
 
-The daemon reads a TOML file (default `/etc/restinpieces-backup/onlineapi.toml`, override with `-config <path>`). It uses the same `[backup]` shape the restinpieces application uses: each database is one `[backup.online.<key>]` section; `<key>` is a label you choose, for example `app-online`:
+The command reads a TOML file (default `/etc/restinpieces-backup/onlineapi.toml`, override with `-config <path>`). It uses the same `[backup]` shape the restinpieces application uses: each database is one `[backup.online.<key>]` section; `<key>` is a label you choose, for example `app-online`:
 
 ```toml
 [backup.online.app-online]
@@ -226,11 +228,11 @@ sleep_interval = "10ms"
 
 The [`VACUUM INTO`](https://www.sqlite.org/lang_vacuum.html) command writes a clean, defragmented copy of a database to a new file, so the snapshot stays compact and consistent while the database keeps being written.
 
-This repository ships VACUUM INTO in two forms: a [restinpieces framework implementation](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/vacuum/restinpieces) that registers the daemon inside a restinpieces app, and a standalone [daemon](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/vacuum/daemon) that runs outside restinpieces.
+This repository ships VACUUM INTO in two forms: a restinpieces job for app mode and a one-shot command for other machines.
 
 ### restinpieces integration (`cmd/vacuum/restinpieces`)
 
-It embeds the vacuum daemon inside a restinpieces application: the daemon produces VACUUM INTO snapshots of the databases configured in the backup section. The complete, runnable example is in [`main.go`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/vacuum/restinpieces/main.go): it builds the application, creates the vacuum daemon from the app's config pointer, registers it with `srv.AddDaemon`, then runs the server.
+It embeds the vacuum job inside a restinpieces application: the handler produces VACUUM INTO snapshots of the databases configured in the backup section. The complete, runnable example is in [`main.go`](https://github.com/caasmo/restinpieces-backup/tree/master/cmd/vacuum/restinpieces/main.go): it builds the application, creates the handler from the app's config pointer, registers it with `srv.AddJobHandler`, then runs the server. The scheduler runs the handler on the interval of the `[scheduler.jobs]` entry whose `job_type` is `vacuum`; an entry is backed up only when its `frequency` has elapsed.
 
 Configure which databases to back up with the `ripc` tool:
 
@@ -239,23 +241,25 @@ ripc scaffold backup-vacuum app-vacuum
 ripc set backup.vacuum.app-vacuum.source_path /path/to/db
 ```
 
-A SIGHUP reload of the application configuration is visible at the next daemon tick.
+A SIGHUP reload of the application configuration is visible at the next scheduled run.
 
-### standalone daemon (`cmd/vacuum/daemon`)
+### one-shot (`cmd/vacuum/oneshot`)
 
-A Go daemon running `VACUUM INTO` outside restinpieces, on any machine that holds live databases. It produces a clean, defragmented snapshot of each database at a fixed interval and updates a hard link to the last snapshot.
+A Go command running `VACUUM INTO` outside restinpieces, on any machine that holds live databases. It produces a clean, defragmented snapshot of each database and updates a hard link to the last snapshot.
 
 The rsync and sftp commands use that link as their sync target.
 
 #### Build
 
 ```bash
-go build -o vacuum ./cmd/vacuum/daemon
+go build -o vacuum ./cmd/vacuum/oneshot
 ```
+
+The command runs one pass over every due database and exits: exit code 0 means the pass succeeded, 1 means a step failed. Run it from a cron job or a systemd timer.
 
 #### Configuration
 
-The daemon reads a TOML file (default `/etc/restinpieces-backup/vacuum.toml`, override with `-config <path>`). It uses the same `[backup]` shape the restinpieces application uses: each database is one `[backup.vacuum.<key>]` section:
+The command reads a TOML file (default `/etc/restinpieces-backup/vacuum.toml`, override with `-config <path>`). It uses the same `[backup]` shape the restinpieces application uses: each database is one `[backup.vacuum.<key>]` section:
 
 ```toml
 [backup.vacuum.app-vacuum]
@@ -302,7 +306,7 @@ A pure Go rsync client. It pulls the local backups the online API and VACUUM met
 
 A one-shot run. A script to be used alongside a scheduler like cron or a systemd timer.
 
-It starts the `rsync` binary in server (sender) mode — over SSH, or locally on the same machine with `-l` — and pulls every `latest-*.db` file (the hard links the local-copy daemon keeps) into a local destination directory.
+It starts the `rsync` binary in server (sender) mode — over SSH, or locally on the same machine with `-l` — and pulls every `latest-*.db` file (the hard links the local-copy job keeps) into a local destination directory.
 
 Files are written atomically (temp file + rename), and every received database must pass `PRAGMA integrity_check`.
 
@@ -350,7 +354,7 @@ The daemon's security is documented in [cmd/rsync/daemon/README.md](cmd/rsync/da
 
 ### Running on a schedule
 
-The one-shot commands (`cmd/rsync/oneshot` and `cmd/sftp/oneshot`) are one-shot runs: exit code `0` means the transfer and the integrity verification succeeded, `1` means any step failed (e.g. the glob matched nothing, a file failed verification, or the server process errored). Run them from a cron job or a systemd timer. The daemons (`cmd/rsync/daemon`, `cmd/sqlite-rsync/replica/daemon`, `cmd/sqlite-rsync/origin/daemon`) are always-on and need no scheduling.
+The one-shot commands (`cmd/rsync/oneshot`, `cmd/sftp/oneshot`, `cmd/onlineapi/oneshot` and `cmd/vacuum/oneshot`) are one-shot runs: exit code `0` means the run succeeded, `1` means any step failed (e.g. the glob matched nothing, a file failed verification, or the server process errored). Run them from a cron job or a systemd timer. The daemons (`cmd/rsync/daemon`, `cmd/sqlite-rsync/replica/daemon`, `cmd/sqlite-rsync/origin/daemon`) are always-on and need no scheduling.
 
 #### Cron
 

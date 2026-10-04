@@ -8,25 +8,9 @@ import (
 	"time"
 )
 
-// writeSQLiteFile writes a minimal file so the validation path check
-// for source_path (existing file) passes. The entry is never backed
-// up in these tests.
-func writeSQLiteFile(t *testing.T, path string) {
-	t.Helper()
-	if err := os.WriteFile(path, []byte("SQLite format 3\x00"), 0644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-}
-
-// TestReadConfig pins the parse-and-validate contract of readConfig.
+// TestReadConfig pins the parse contract of readConfig: the [backup]
+// section is the application configuration shape.
 func TestReadConfig(t *testing.T) {
-	srcPath := filepath.Join(t.TempDir(), "app.db")
-	writeSQLiteFile(t, srcPath)
-	destDir := filepath.Join(t.TempDir(), "backups")
-	if err := os.Mkdir(destDir, 0755); err != nil {
-		t.Fatalf("Mkdir: %v", err)
-	}
-
 	writeConfig := func(t *testing.T, tomlText string) string {
 		t.Helper()
 		path := filepath.Join(t.TempDir(), "vacuum.toml")
@@ -39,8 +23,8 @@ func TestReadConfig(t *testing.T) {
 	t.Run("valid full entry", func(t *testing.T) {
 		path := writeConfig(t, `
 [backup.vacuum.app_db]
-source_path = "`+srcPath+`"
-dest_path = "`+destDir+`"
+source_path = "/path/to/app.db"
+dest_path = "/path/to/backups"
 frequency = "24h"
 compression = true
 `)
@@ -49,7 +33,7 @@ compression = true
 			t.Fatalf("readConfig: %v", err)
 		}
 		f := cfg.Backup.Vacuum["app_db"]
-		if f.SourcePath != srcPath || f.DestPath != destDir || f.Frequency.Duration != 24*time.Hour || !f.Compression {
+		if f.SourcePath != "/path/to/app.db" || f.DestPath != "/path/to/backups" || f.Frequency.Duration != 24*time.Hour || !f.Compression {
 			t.Fatalf("entry = %+v, want source/dest/24h/compressed", f)
 		}
 	})
@@ -69,22 +53,6 @@ compression = true
 		}
 		if !strings.Contains(err.Error(), "failed to parse config file") {
 			t.Errorf("readConfig: error %q should mention parsing", err)
-		}
-	})
-
-	t.Run("validation failure", func(t *testing.T) {
-		path := writeConfig(t, `
-[backup.vacuum.app_db]
-source_path = "`+srcPath+`"
-dest_path = "`+destDir+`"
-frequency = "0s"
-`)
-		_, err := readConfig(path)
-		if err == nil {
-			t.Fatal("readConfig: expected error for zero frequency, got nil")
-		}
-		if !strings.Contains(err.Error(), "config validation failed") {
-			t.Errorf("readConfig: error %q should mention validation", err)
 		}
 	})
 }

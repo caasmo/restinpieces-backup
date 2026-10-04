@@ -1,9 +1,9 @@
-// Command restinpieces is an example of embedding the vacuum daemon
+// Command restinpieces is an example of embedding the vacuum handler
 // in a restinpieces application: the app serves its HTTP API and, in
 // the background, produces VACUUM INTO snapshots of the databases
 // configured in the backup section.
 //
-// The daemon reads the [backup] section of the application
+// The handler reads the [backup] section of the application
 // configuration from the app's current-config box, so it needs no
 // configuration of its own. The databases are configured where the
 // rest of the application configuration lives, with the shape ripc
@@ -14,8 +14,17 @@
 //	dest_path = "/path/to/backups"
 //	frequency = "24h"
 //
+// The scheduler runs the handler on the interval of the [scheduler.jobs]
+// entry whose job_type is "vacuum". An entry is backed up only when its
+// frequency has elapsed:
+//
+//	[scheduler.jobs.vacuum]
+//	job_type = "vacuum"
+//	interval = "1m"
+//	activated = true
+//
 // A SIGHUP reload of the application configuration is visible at the
-// next daemon tick.
+// next scheduled run.
 package main
 
 import (
@@ -26,7 +35,6 @@ import (
 
 	"github.com/caasmo/restinpieces"
 	"github.com/caasmo/restinpieces-backup/vacuum"
-	"github.com/caasmo/restinpieces/config"
 )
 
 func main() {
@@ -81,17 +89,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	// --- Vacuum daemon setup ---
+	// --- Vacuum job setup ---
 	// New loads and validates the application configuration from the
 	// config store, so the current-config box is already populated.
-	// The vacuum daemon holds that box (coreApp.ConfigPointer()) and
-	// reads the backup.vacuum configuration at every tick.
-	vacuumDaemon := vacuum.New[config.Config](coreApp.ConfigPointer(), nil)
+	// The handler holds that box (coreApp.ConfigPointer()) and reads the
+	// backup.vacuum configuration at every run.
+	vacuumHandler := vacuum.New(coreApp.ConfigPointer(), nil)
 
-	// The daemon satisfies the restinpieces server.Daemon contract:
-	// the server starts it with Start() after the HTTP server, and
-	// stops it with Stop() during graceful shutdown.
-	srv.AddDaemon(vacuumDaemon)
+	// Registering the handler makes the scheduler run it on the interval
+	// of the [scheduler.jobs] entry whose job_type is "vacuum".
+	err = srv.AddJobHandler(vacuum.JobTypeVacuum, vacuumHandler)
+	if err != nil {
+		slog.Error("failed to register the vacuum job handler", "error", err)
+		os.Exit(1)
+	}
 
 	// Run blocks until SIGINT/SIGQUIT/SIGHUP. SIGINT/SIGQUIT shut the
 	// server and the daemons down gracefully within the configured
