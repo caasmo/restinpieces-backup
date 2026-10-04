@@ -1,7 +1,6 @@
-// Package upload provides the S3 upload daemon. Each configured entry
+// Package upload provides the S3 upload job. Each configured entry
 // selects one file: a fixed path, or the newest file matching a path
-// prefix. The daemon checks the entry's min_interval against the file's
-// modification time and puts the file to an S3-compatible bucket under
+// prefix. The job puts the file to an S3-compatible bucket under
 // the object key backup/<label>/<pad>/<filename>; a file whose object
 // already exists is not uploaded again. When a recipient is configured
 // the file is encrypted with age while it is uploaded.
@@ -30,131 +29,48 @@ import (
 	"time"
 
 	"filippo.io/age"
-	"github.com/caasmo/go-daemon-runner/daemon"
 	"github.com/caasmo/restinpieces-backup/s3"
 	"github.com/caasmo/restinpieces/config"
+	"github.com/caasmo/restinpieces/db"
 	s3client "github.com/caasmo/restinpieces/s3"
 )
 
-// tickInterval is how often the daemon checks every entry.
-const tickInterval = time.Minute
+// JobTypeS3Upload is the job type this handler registers under.
+const JobTypeS3Upload = "s3_upload"
 
-// Daemon uploads one file per configured entry to S3. It ticks every
-// minute from startup; an entry is skipped until its min_interval has
-// elapsed since the file's modification time.
-type Daemon struct {
-	daemon.Base
+// Handler uploads one file per configured entry to S3. It is a job
+// handler: the scheduler calls Handle on the job's interval.
+type Handler struct {
 	cfgPointer *atomic.Pointer[config.Config]
+	logger     *slog.Logger
 	s3Client   *s3client.S3
 }
 
-// New creates the daemon with the configuration it reads. A nil logger
+// New creates the handler with the configuration it reads. A nil logger
 // falls back to slog.Default().
-func New(pointer *atomic.Pointer[config.Config], logger *slog.Logger) *Daemon {
-	d := &Daemon{
-		Base:       daemon.NewBase("S3Daemon", logger),
-		cfgPointer: pointer,
+func New(pointer *atomic.Pointer[config.Config], logger *slog.Logger) *Handler {
+	if logger == nil {
+		logger = slog.Default()
 	}
-	d.Logger = d.Logger.With("daemon_name", d.Name())
-	return d
+	return &Handler{cfgPointer: pointer, logger: logger}
 }
 
-// Run starts the daemon's goroutine. The first pass runs immediately at
-// startup (skipped if Stop already fired), then one pass every
-// tickInterval. Stop cancels the context, which ends the loop; a request
-// in flight aborts when its current request finishes.
-func (d *Daemon) Run() error {
-	go func() {
-		defer close(d.ShutdownDone)
-
-		for {
-			if err := d.Ctx.Err(); err != nil {
-				return // stopped before the next pass
-			}
-
-			cfg := d.cfgPointer.Load()
-
-			err := d.handle(d.Ctx, cfg)
-			if err != nil {
-				if errors.Is(err, context.Canceled) {
-					d.Logger.Info("upload aborted by shutdown")
-					return
-				}
-				d.Logger.Error("upload pass failed", "error", err)
-			}
-
-			select {
-			case <-d.Ctx.Done():
-				return
-			case <-time.After(tickInterval):
-			}
-		}
-	}()
-	return nil
+// Handle runs one upload pass. The job payload is not used.
+func (h *Handler) Handle(ctx context.Context, job db.Job) error {
+	cfg := h.cfgPointer.Load()
+	return h.handle(ctx, cfg)
 }
 
-// Start calls Run so the daemon fits the restinpieces server.Daemon
-// interface: the server calls Start() after the HTTP server starts and
-// Stop() during shutdown. Register it with srv.AddDaemon while
-// restinpieces manages daemons itself.
-//
-// TODO: remove once restinpieces is on go-daemon-runner; the runner
-// calls Run directly.
-func (d *Daemon) Start() error {
-	return d.Run()
-}
-
-// handle runs one pass over every entry. It logs when the daemon has
-// nothing to do and builds the client from the s3 section for this pass.
-// One failing entry does not stop the others; all errors are returned
-// together.
-func (d *Daemon) handle(ctx context.Context, cfg *config.Config) error {
-	entries := cfg.Backup.S3Upload
-	if len(entries) == 0 {
-		d.Logger.Info("No backup.s3-upload entries; nothing to do.")
-		return nil
-	}
-
-	client, err := s3.NewClient(cfg.S3)
-	if err != nil {
-		d.Logger.Info("s3.endpoint is empty; nothing to do.")
-		return nil
-	}
-	d.s3Client = client
-
-	var errs []error
-	for _, label := range slices.Sorted(maps.Keys(entries)) {
-		ctxErr := ctx.Err()
-		if ctxErr != nil {
-			return ctxErr
-		}
-
-		entry := entries[label]
-		uploadErr := d.uploadOne(ctx, label, entry)
-		if uploadErr != nil {
-			errs = append(errs, fmt.Errorf("%q: %w", label, uploadErr))
-		}
-	}
-	return errors.Join(errs...)
-}
-
-// uploadOne selects the entry's file, checks that the entry's min_interval
-// has elapsed since the file's modification time, and puts the file
-// under the inverted timestamp key.
-func (d *Daemon) uploadOne(ctx context.Context, label string, entry config.BackupS3UploadEntry) error {
+// uploadOne selects the entry's file and puts it under the inverted
+// timestamp key, unless the object is already in the bucket.
+func (h *Handler) uploadOne(ctx context.Context, label string, entry config.BackupS3UploadEntry) error {
 	if entry.Path == "" && entry.PathPrefix == "" {
 		return nil // deactivated
 	}
 
 	filePath, modTime, ok := fileToUpload(entry)
 	if !ok {
-		d.Logger.Info("Skipping; no file to upload", "s3_upload", label)
-		return nil
-	}
-
-	elapsed := time.Since(modTime)
-	if elapsed < entry.MinInterval.Duration {
-		d.Logger.Info("Skipping; not due yet", "s3_upload", label, "next_upload_in", entry.MinInterval.Duration-elapsed)
+		h.logger.Info("Skipping; no file to upload", "s3_upload", label)
 		return nil
 	}
 
@@ -165,26 +81,60 @@ func (d *Daemon) uploadOne(ctx context.Context, label string, entry config.Backu
 	}
 	key := s3.ObjectKey(label, pad, name)
 
-	exists, err := d.objectExists(ctx, entry.Bucket, key)
+	exists, err := h.objectExists(ctx, entry.Bucket, key)
 	if err != nil {
 		return err
 	}
 	if exists {
-		d.Logger.Info("Skipping; backup already in bucket", "s3_upload", label, "key", key)
+		h.logger.Info("Skipping; backup already in bucket", "s3_upload", label, "key", key)
 		return nil
 	}
 
 	if entry.AgeRecipient != "" {
-		err = d.uploadObjectEncrypted(ctx, entry.Bucket, key, filePath, entry.AgeRecipient)
+		err = h.uploadObjectEncrypted(ctx, entry.Bucket, key, filePath, entry.AgeRecipient)
 	} else {
-		err = d.uploadObject(ctx, entry.Bucket, key, filePath)
+		err = h.uploadObject(ctx, entry.Bucket, key, filePath)
 	}
 	if err != nil {
 		return err
 	}
 
-	d.Logger.Info("Stored backup", "s3_upload", label, "key", key)
+	h.logger.Info("Stored backup", "s3_upload", label, "key", key)
 	return nil
+}
+
+// handle runs one pass over every entry. It logs when the daemon has
+// nothing to do and builds the client from the s3 section for this pass.
+// One failing entry does not stop the others; all errors are returned
+// together.
+func (h *Handler) handle(ctx context.Context, cfg *config.Config) error {
+	entries := cfg.Backup.S3Upload
+	if len(entries) == 0 {
+		h.logger.Info("No backup.s3-upload entries; nothing to do.")
+		return nil
+	}
+
+	client, err := s3.NewClient(cfg.S3)
+	if err != nil {
+		h.logger.Info("s3.endpoint is empty; nothing to do.")
+		return nil
+	}
+	h.s3Client = client
+
+	var errs []error
+	for _, label := range slices.Sorted(maps.Keys(entries)) {
+		ctxErr := ctx.Err()
+		if ctxErr != nil {
+			return ctxErr
+		}
+
+		entry := entries[label]
+		uploadErr := h.uploadOne(ctx, label, entry)
+		if uploadErr != nil {
+			errs = append(errs, fmt.Errorf("%q: %w", label, uploadErr))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // fileToUpload returns the file to upload and its modification time: the
@@ -237,8 +187,8 @@ func fileToUpload(entry config.BackupS3UploadEntry) (path string, modTime time.T
 
 // objectExists reports whether the backup is already in the bucket. A
 // 404 response means it is not there; any other error is returned.
-func (d *Daemon) objectExists(ctx context.Context, bucket, key string) (bool, error) {
-	_, err := d.s3Client.HeadObject(ctx, bucket, key)
+func (h *Handler) objectExists(ctx context.Context, bucket, key string) (bool, error) {
+	_, err := h.s3Client.HeadObject(ctx, bucket, key)
 	if err == nil {
 		return true, nil
 	}
@@ -254,7 +204,7 @@ func (d *Daemon) objectExists(ctx context.Context, bucket, key string) (bool, er
 
 // uploadObject puts one backup without encryption. PutObject closes
 // the file when the request ends.
-func (d *Daemon) uploadObject(ctx context.Context, bucket, key, path string) error {
+func (h *Handler) uploadObject(ctx context.Context, bucket, key, path string) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("failed to open backup: %w", err)
@@ -266,7 +216,7 @@ func (d *Daemon) uploadObject(ctx context.Context, bucket, key, path string) err
 		return errors.Join(fmt.Errorf("failed to stat backup: %w", err), closeErr)
 	}
 
-	putErr := d.s3Client.PutObject(ctx, bucket, key, file, info.Size())
+	putErr := h.s3Client.PutObject(ctx, bucket, key, file, info.Size())
 	if putErr != nil {
 		return fmt.Errorf("failed to put %q: %w", key, putErr)
 	}
@@ -282,7 +232,7 @@ func (d *Daemon) uploadObject(ctx context.Context, bucket, key, path string) err
 // standard bridge is an io.Pipe with a goroutine running the producer,
 // unbuffered so memory stays flat. Producer errors travel through
 // CloseWithError, so a failed read aborts the request.
-func (d *Daemon) uploadObjectEncrypted(ctx context.Context, bucket, key, path, recipient string) error {
+func (h *Handler) uploadObjectEncrypted(ctx context.Context, bucket, key, path, recipient string) error {
 	recipientID, err := age.ParseX25519Recipient(recipient)
 	if err != nil {
 		return fmt.Errorf("failed to parse age recipient: %w", err)
@@ -291,13 +241,13 @@ func (d *Daemon) uploadObjectEncrypted(ctx context.Context, bucket, key, path, r
 	// a content length of -1 means the S3 provider accepts an unknown
 	// length; the body is then sent in chunks
 	contentLength := int64(-1)
-	if d.s3Client.RequireContentLength {
-		d.Logger.Info("Measuring encrypted content length; the S3 provider requires it", "key", key)
+	if h.s3Client.RequireContentLength {
+		h.logger.Info("Measuring encrypted content length; the S3 provider requires it", "key", key)
 		contentLength, err = encryptedContentLength(path, recipientID)
 		if err != nil {
 			return fmt.Errorf("failed to measure encrypted backup: %w", err)
 		}
-		d.Logger.Info("Measured encrypted content length", "key", key, "content_length", contentLength)
+		h.logger.Info("Measured encrypted content length", "key", key, "content_length", contentLength)
 	}
 
 	pipeReader, pipeWriter := io.Pipe()
@@ -309,7 +259,7 @@ func (d *Daemon) uploadObjectEncrypted(ctx context.Context, bucket, key, path, r
 		producerErrCh <- producerErr
 	}()
 
-	putErr := d.s3Client.PutObject(ctx, bucket, key, pipeReader, contentLength)
+	putErr := h.s3Client.PutObject(ctx, bucket, key, pipeReader, contentLength)
 	// PutObject may return before the body is drained (for example when the
 	// request fails); closing the reader unblocks a producer still writing.
 	_ = pipeReader.Close()

@@ -92,8 +92,8 @@ func (f *fakeS3) lastPutRequest() (int64, []string) {
 	return f.lastContentLength, f.lastTransferEncoding
 }
 
-// newTestDaemon builds a daemon over the config.
-func newTestDaemon(cfg config.Config) *Daemon {
+// newTestHandler builds a handler over the config.
+func newTestHandler(cfg config.Config) *Handler {
 	var pointer atomic.Pointer[config.Config]
 	pointer.Store(&cfg)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -138,17 +138,17 @@ func writeBackup(t *testing.T, dir, name string, data []byte) string {
 	return path
 }
 
-// handleOnce runs one daemon pass over the config's entries.
-func handleOnce(t *testing.T, daemon *Daemon, cfg config.Config) {
+// handleOnce runs one handler pass over the config's entries.
+func handleOnce(t *testing.T, handler *Handler, cfg config.Config) {
 	t.Helper()
-	err := daemon.handle(context.Background(), &cfg)
+	err := handler.handle(context.Background(), &cfg)
 	if err != nil {
 		t.Fatalf("handle: %v", err)
 	}
 }
 
-// backdate sets a file's modification time so the entry's min_interval
-// has elapsed.
+// backdate sets a file's modification time, so the newest match under a
+// path prefix is unambiguous.
 func backdate(t *testing.T, path string, age time.Duration) {
 	t.Helper()
 	old := time.Now().Add(-age)
@@ -158,20 +158,18 @@ func backdate(t *testing.T, path string, age time.Duration) {
 	}
 }
 
-func TestDaemon_UploadsFixedPath(t *testing.T) {
+func TestHandler_UploadsFixedPath(t *testing.T) {
 	server, bucket := startFakeS3(t)
 	dir := t.TempDir()
 	file := writeBackup(t, dir, "app.db", []byte("data"))
-	backdate(t, file, 2*time.Hour)
 
 	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{
-		Bucket:      "test-bucket",
-		Path:        file,
-		MinInterval: config.Duration{Duration: time.Hour},
+		Bucket: "test-bucket",
+		Path:   file,
 	})
-	daemon := newTestDaemon(cfg)
+	handler := newTestHandler(cfg)
 
-	handleOnce(t, daemon, cfg)
+	handleOnce(t, handler, cfg)
 
 	info, err := os.Stat(file)
 	if err != nil {
@@ -183,7 +181,7 @@ func TestDaemon_UploadsFixedPath(t *testing.T) {
 	}
 }
 
-func TestDaemon_UploadsLatestUnderPrefix(t *testing.T) {
+func TestHandler_UploadsLatestUnderPrefix(t *testing.T) {
 	server, bucket := startFakeS3(t)
 	dir := t.TempDir()
 	older := writeBackup(t, dir, "app.db-20260101T000000Z.db", []byte("older"))
@@ -195,11 +193,10 @@ func TestDaemon_UploadsLatestUnderPrefix(t *testing.T) {
 		Bucket:             "test-bucket",
 		PathPrefix:         filepath.Join(dir, "app.db-"),
 		PathPrefixSelector: "latest",
-		MinInterval:        config.Duration{Duration: time.Hour},
 	})
-	daemon := newTestDaemon(cfg)
+	handler := newTestHandler(cfg)
 
-	handleOnce(t, daemon, cfg)
+	handleOnce(t, handler, cfg)
 
 	info, err := os.Stat(newest)
 	if err != nil {
@@ -211,29 +208,10 @@ func TestDaemon_UploadsLatestUnderPrefix(t *testing.T) {
 	}
 }
 
-func TestDaemon_SkipsNotDue(t *testing.T) {
-	server, bucket := startFakeS3(t)
-	dir := t.TempDir()
-	file := writeBackup(t, dir, "app.db", []byte("data"))
-
-	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{
-		Bucket:      "test-bucket",
-		Path:        file,
-		MinInterval: config.Duration{Duration: time.Hour},
-	})
-	daemon := newTestDaemon(cfg)
-
-	handleOnce(t, daemon, cfg)
-	if got := bucket.putCount(); got != 0 {
-		t.Fatalf("put count = %d, want 0", got)
-	}
-}
-
-func TestDaemon_SkipsExistingObject(t *testing.T) {
+func TestHandler_SkipsExistingObject(t *testing.T) {
 	server, bucket := startFakeS3(t)
 	dir := t.TempDir()
 	file := writeBackup(t, dir, "app.db", []byte("newest"))
-	backdate(t, file, 2*time.Hour)
 
 	info, err := os.Stat(file)
 	if err != nil {
@@ -242,23 +220,21 @@ func TestDaemon_SkipsExistingObject(t *testing.T) {
 	bucket.put(objectKey("app-s3", file, info.ModTime(), ""), []byte("already there"))
 
 	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{
-		Bucket:      "test-bucket",
-		Path:        file,
-		MinInterval: config.Duration{Duration: time.Hour},
+		Bucket: "test-bucket",
+		Path:   file,
 	})
-	daemon := newTestDaemon(cfg)
+	handler := newTestHandler(cfg)
 
-	handleOnce(t, daemon, cfg)
+	handleOnce(t, handler, cfg)
 	if got := bucket.putCount(); got != 0 {
 		t.Fatalf("put count = %d, want 0", got)
 	}
 }
 
-func TestDaemon_EncryptsWithRecipient(t *testing.T) {
+func TestHandler_EncryptsWithRecipient(t *testing.T) {
 	server, bucket := startFakeS3(t)
 	dir := t.TempDir()
 	file := writeBackup(t, dir, "app.db", []byte("plaintext"))
-	backdate(t, file, 2*time.Hour)
 	identity, err := age.GenerateX25519Identity()
 	if err != nil {
 		t.Fatalf("GenerateX25519Identity: %v", err)
@@ -267,12 +243,11 @@ func TestDaemon_EncryptsWithRecipient(t *testing.T) {
 	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{
 		Bucket:       "test-bucket",
 		Path:         file,
-		MinInterval:  config.Duration{Duration: time.Hour},
 		AgeRecipient: identity.Recipient().String(),
 	})
-	daemon := newTestDaemon(cfg)
+	handler := newTestHandler(cfg)
 
-	handleOnce(t, daemon, cfg)
+	handleOnce(t, handler, cfg)
 
 	info, err := os.Stat(file)
 	if err != nil {
@@ -302,11 +277,10 @@ func TestDaemon_EncryptsWithRecipient(t *testing.T) {
 	}
 }
 
-func TestDaemon_EncryptsWithRequiredContentLength(t *testing.T) {
+func TestHandler_EncryptsWithRequiredContentLength(t *testing.T) {
 	server, bucket := startFakeS3(t)
 	dir := t.TempDir()
 	file := writeBackup(t, dir, "app.db", []byte("plaintext"))
-	backdate(t, file, 2*time.Hour)
 	identity, err := age.GenerateX25519Identity()
 	if err != nil {
 		t.Fatalf("GenerateX25519Identity: %v", err)
@@ -315,13 +289,12 @@ func TestDaemon_EncryptsWithRequiredContentLength(t *testing.T) {
 	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{
 		Bucket:       "test-bucket",
 		Path:         file,
-		MinInterval:  config.Duration{Duration: time.Hour},
 		AgeRecipient: identity.Recipient().String(),
 	})
 	cfg.S3.RequireContentLength = true
-	daemon := newTestDaemon(cfg)
+	handler := newTestHandler(cfg)
 
-	handleOnce(t, daemon, cfg)
+	handleOnce(t, handler, cfg)
 
 	info, err := os.Stat(file)
 	if err != nil {
@@ -353,7 +326,7 @@ func TestDaemon_EncryptsWithRequiredContentLength(t *testing.T) {
 	}
 }
 
-func TestDaemon_NoFileYet(t *testing.T) {
+func TestHandler_NoFileYet(t *testing.T) {
 	server, bucket := startFakeS3(t)
 	dir := t.TempDir()
 
@@ -361,11 +334,10 @@ func TestDaemon_NoFileYet(t *testing.T) {
 		Bucket:             "test-bucket",
 		PathPrefix:         filepath.Join(dir, "app.db-"),
 		PathPrefixSelector: "latest",
-		MinInterval:        config.Duration{Duration: time.Hour},
 	})
-	daemon := newTestDaemon(cfg)
+	handler := newTestHandler(cfg)
 
-	handleOnce(t, daemon, cfg)
+	handleOnce(t, handler, cfg)
 	if got := bucket.putCount(); got != 0 {
 		t.Fatalf("put count = %d, want 0", got)
 	}

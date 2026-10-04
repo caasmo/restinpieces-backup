@@ -1,8 +1,9 @@
-// Command restinpieces is an example of embedding the S3 upload daemon in
-// a restinpieces application: the app serves its HTTP API and, in the
-// background, uploads the configured files to an S3-compatible bucket.
+// Command restinpieces is an example of embedding the S3 upload job in
+// a restinpieces application: the app serves its HTTP API and, on the
+// scheduler's interval, uploads the configured files to an S3-compatible
+// bucket.
 //
-// The daemon reads the [backup] and [s3] sections of the application
+// The handler reads the [backup] and [s3] sections of the application
 // configuration from the running app, so it needs no configuration of its
 // own. An entry names either a fixed file or a path prefix; a prefix
 // entry uploads its newest matching file. Configure it like the rest of
@@ -13,8 +14,15 @@
 //	bucket = "my-backups"
 //	path_prefix = "/path/to/backups/app.db-"
 //	path_prefix_selector = "latest"
-//	min_interval = "5m"
 //	age_recipient = "age1..."
+//
+// The scheduler runs the handler on the interval of the [scheduler.jobs]
+// entry whose job_type is "s3_upload":
+//
+//	[scheduler.jobs.s3_upload]
+//	job_type = "s3_upload"
+//	interval = "5m"
+//	activated = true
 //
 //	[s3]
 //	endpoint = "https://s3.example.com"
@@ -24,7 +32,7 @@
 //	use_path_style = true
 //
 // A SIGHUP reload of the application configuration is visible at the next
-// daemon tick.
+// scheduled run.
 package main
 
 import (
@@ -89,17 +97,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	// --- S3 upload daemon setup ---
+	// --- S3 upload job setup ---
 	// New loads and validates the application configuration from the
 	// config store, so the current configuration is already loaded.
-	// The daemon holds the pointer (coreApp.ConfigPointer()) and reads the
-	// backup and s3 configuration at every tick.
-	uploadDaemon := upload.New(coreApp.ConfigPointer(), nil)
+	// The handler holds the pointer (coreApp.ConfigPointer()) and reads
+	// the backup and s3 configuration at every run.
+	uploadHandler := upload.New(coreApp.ConfigPointer(), nil)
 
-	// The daemon satisfies the restinpieces server.Daemon interface:
-	// the server starts it with Start() after the HTTP server, and
-	// stops it with Stop() during graceful shutdown.
-	srv.AddDaemon(uploadDaemon)
+	// Registering the handler makes the scheduler run it on the interval
+	// of the [scheduler.jobs] entry whose job_type is "s3_upload".
+	err = srv.AddJobHandler(upload.JobTypeS3Upload, uploadHandler)
+	if err != nil {
+		slog.Error("failed to register the S3 upload job handler", "error", err)
+		os.Exit(1)
+	}
 
 	// Run blocks until SIGINT/SIGQUIT/SIGHUP. SIGINT/SIGQUIT shut the
 	// server and the daemons down gracefully within the configured
