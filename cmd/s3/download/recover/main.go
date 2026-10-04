@@ -12,6 +12,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -176,6 +177,7 @@ func objectKeyPrefix(label string) string {
 func downloadFromS3(cfg *config.Config, uploads config.BackupS3Upload) error {
 	downloads := make(config.BackupS3Download)
 	for label, entry := range uploads {
+		slog.Info("Downloading backup", "label", label, "bucket", entry.Bucket, "object_key_prefix", objectKeyPrefix(label))
 		downloads[label] = config.BackupS3DownloadEntry{
 			Bucket:          entry.Bucket,
 			ObjectKeyPrefix: objectKeyPrefix(label),
@@ -227,13 +229,32 @@ func findAgeEncryptedFiles(dirs []string) ([]string, error) {
 	}
 
 	slices.Sort(ageFilePaths)
+	slog.Info("Found encrypted downloads", "files", ageFilePaths)
 	return ageFilePaths, nil
 }
 
-// decrypt decrypts the given age-encrypted files and returns the plain
-// files it wrote. The encrypted originals are kept, and one failing
-// file does not stop the others.
-func decrypt(ageFilePaths []string, identities []age.Identity) ([]string, error) {
+// findCompressedFiles lists the gzip-compressed downloads in dirs — the
+// files matching s3download-*.bck.gz — sorted.
+func findCompressedFiles(dirs []string) ([]string, error) {
+	var gzPaths []string
+
+	for _, dir := range dirs {
+		paths, globErr := filepath.Glob(filepath.Join(dir, downloadNamePattern+".bck.gz"))
+		if globErr != nil {
+			return nil, fmt.Errorf("failed to list %q: %w", dir, globErr)
+		}
+		gzPaths = append(gzPaths, paths...)
+	}
+
+	slices.Sort(gzPaths)
+	slog.Info("Found compressed downloads", "files", gzPaths)
+	return gzPaths, nil
+}
+
+// decrypt decrypts the given age-encrypted files in place next to their
+// encrypted originals. The encrypted originals are kept, and one
+// failing file does not stop the others.
+func decrypt(ageFilePaths []string, identities []age.Identity) error {
 	var plainPaths []string
 	var errs []error
 	for _, ageFilePath := range ageFilePaths {
@@ -246,7 +267,8 @@ func decrypt(ageFilePaths []string, identities []age.Identity) ([]string, error)
 		}
 		plainPaths = append(plainPaths, plainPath)
 	}
-	return plainPaths, errors.Join(errs...)
+	slog.Info("Decrypted downloads", "files", plainPaths)
+	return errors.Join(errs...)
 }
 
 // decryptOne decrypts one age file to plainPath, the file next to the
@@ -279,6 +301,60 @@ func decryptOne(agePath, plainPath string, identities []age.Identity) (err error
 	return nil
 }
 
+// decompress gunzips the given .bck.gz files in place next to their
+// compressed originals, under the plain .db name the compression
+// replaced. The compressed originals are kept, and one failing file does
+// not stop the others.
+func decompress(gzPaths []string) error {
+	var plainPaths []string
+	var errs []error
+	for _, gzPath := range gzPaths {
+		plainPath := strings.TrimSuffix(gzPath, ".bck.gz") + ".db"
+
+		decompressErr := decompressOne(gzPath, plainPath)
+		if decompressErr != nil {
+			errs = append(errs, decompressErr)
+			continue
+		}
+		plainPaths = append(plainPaths, plainPath)
+	}
+	slog.Info("Decompressed downloads", "files", plainPaths)
+	return errors.Join(errs...)
+}
+
+// decompressOne gunzips one .bck.gz file to plainPath, the file next to
+// the compressed original. A failed copy leaves nothing behind.
+func decompressOne(gzPath, plainPath string) (err error) {
+	source, openErr := os.Open(gzPath)
+	if openErr != nil {
+		return fmt.Errorf("failed to open %q: %w", gzPath, openErr)
+	}
+	defer func() {
+		err = errors.Join(err, source.Close())
+	}()
+
+	reader, gzipErr := gzip.NewReader(source)
+	if gzipErr != nil {
+		return fmt.Errorf("failed to gunzip %q: %w", gzPath, gzipErr)
+	}
+	defer func() {
+		err = errors.Join(err, reader.Close())
+	}()
+
+	file, createErr := os.Create(plainPath)
+	if createErr != nil {
+		return fmt.Errorf("failed to create %q: %w", plainPath, createErr)
+	}
+
+	_, copyErr := io.Copy(file, reader)
+	closeErr := file.Close()
+	if copyErr != nil || closeErr != nil {
+		removeErr := os.Remove(plainPath)
+		return errors.Join(fmt.Errorf("failed to decompress %q", gzPath), copyErr, closeErr, removeErr)
+	}
+	return nil
+}
+
 // findDbPaths returns the downloaded database for each upload, keyed by
 // label: the file matching s3download-<label>-*.db in the dir the upload
 // came from. Empty string when a label has none. The handler downloads
@@ -301,6 +377,7 @@ func findDbPaths(uploads config.BackupS3Upload) (map[string]string, error) {
 		}
 	}
 
+	slog.Info("Found database files", "dbs", dbs)
 	return dbs, nil
 }
 
@@ -324,8 +401,10 @@ func findAppDB(dbs map[string]string) (string, error) {
 			continue
 		}
 		if isAppDB(dbPath) {
+			slog.Info("Found app database", "db", dbPath)
 			return dbPath, nil
 		}
+		slog.Info("Skipping; ripc cannot read the database", "db", dbPath)
 	}
 	return "", fmt.Errorf("no readable database among %v", dbs)
 }
@@ -334,13 +413,14 @@ func findAppDB(dbs map[string]string) (string, error) {
 // database. It refuses when the target already reads as one.
 func moveAppDB(source, target string) error {
 	if isAppDB(target) {
-		return fmt.Errorf("target %q already reads as an application database", target)
+		return fmt.Errorf("target %q already exists", target)
 	}
 
 	err := os.Rename(source, target)
 	if err != nil {
 		return fmt.Errorf("failed to move %q to %q: %w", source, target, err)
 	}
+	slog.Info("Moved app database", "source", source, "target", target)
 	return nil
 }
 
@@ -359,26 +439,30 @@ func main() {
 		slog.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
+	slog.Info("Loaded config", "path", configFileName)
+
+	uploads := uploads(cfg)
 
 	err = validateConfig(cfg)
 	if err != nil {
 		slog.Error("invalid config", "error", err)
 		os.Exit(1)
 	}
+	slog.Info("Config validated", "endpoint", cfg.S3.Endpoint, "uploads", len(uploads))
 
 	identities, err := loadAgeKey(ageKeyFileName)
 	if err != nil {
 		slog.Error("failed to load the age key", "error", err)
 		os.Exit(1)
 	}
-
-	uploads := uploads(cfg)
+	slog.Info("Loaded age key", "path", ageKeyFileName, "identities", len(identities))
 
 	dirs, err := createDestDirs(uploads)
 	if err != nil {
 		slog.Error("failed to create the dest directories", "error", err)
 		os.Exit(1)
 	}
+	slog.Info("Created destination directories", "dirs", dirs)
 
 	downloadErr := downloadFromS3(cfg, uploads)
 	if downloadErr != nil {
@@ -391,15 +475,31 @@ func main() {
 		os.Exit(1)
 	}
 
-	_, err = decrypt(ageFilePaths, identities)
+	err = decrypt(ageFilePaths, identities)
 	if err != nil {
 		slog.Error("some downloads failed to decrypt", "error", err)
+	}
+
+	compressedPaths, err := findCompressedFiles(dirs)
+	if err != nil {
+		slog.Error("failed to list compressed downloads", "error", err)
+		os.Exit(1)
+	}
+
+	err = decompress(compressedPaths)
+	if err != nil {
+		slog.Error("some downloads failed to decompress", "error", err)
 	}
 
 	dbs, err := findDbPaths(uploads)
 	if err != nil {
 		slog.Error("failed to list downloaded databases", "error", err)
 		os.Exit(1)
+	}
+
+	if isAppDB(appDBPath) {
+		slog.Info("App database already exists", "path", appDBPath)
+		return
 	}
 
 	appDB, err := findAppDB(dbs)

@@ -250,7 +250,7 @@ func TestDecrypt_DecryptsAgeFiles(t *testing.T) {
 	writeEncrypted(t, agePath1, identity.Recipient(), []byte("first"))
 	writeEncrypted(t, agePath2, identity.Recipient(), []byte("second"))
 
-	plainPaths, err := decrypt([]string{agePath1, agePath2}, []age.Identity{identity})
+	err = decrypt([]string{agePath1, agePath2}, []age.Identity{identity})
 	if err != nil {
 		t.Fatalf("decrypt: %v", err)
 	}
@@ -258,9 +258,6 @@ func TestDecrypt_DecryptsAgeFiles(t *testing.T) {
 	want := []string{
 		filepath.Join(dir, "s3download-app-s3-1-app.db"),
 		filepath.Join(dir, "s3download-app-s3-2-app.db"),
-	}
-	if !slices.Equal(plainPaths, want) {
-		t.Fatalf("decrypted = %v, want %v", plainPaths, want)
 	}
 
 	for i, plainPath := range want {
