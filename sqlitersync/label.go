@@ -26,10 +26,10 @@
 // The preamble is a two-phase handshake, and the sync protocol starts
 // only after the preamble completes:
 //
-// 1. The client writes the label (0x01 plus the database name).
-// 2. The server answers with a preamble response: it echoes the label
-//    (0x01 plus the same name) to accept the sync, or writes an error
-//    (0x02 plus the reason) to reject it and closes the connection.
+//  1. The client writes the label (0x01 plus the database name).
+//  2. The server answers with a preamble response: it echoes the label
+//     (0x01 plus the same name) to accept the sync, or writes an error
+//     (0x02 plus the reason) to reject it and closes the connection.
 //
 // The echo is the acceptance signal. The 0x01 and 0x02 bytes never
 // clash with the sync protocol: after an accepted preamble the origin

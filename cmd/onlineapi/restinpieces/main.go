@@ -1,9 +1,9 @@
-// Command restinpieces is an example of embedding the onlineapi daemon
+// Command restinpieces is an example of embedding the onlineapi handler
 // in a restinpieces application: the app serves its HTTP API and, in
 // the background, produces online backup snapshots of the databases
 // configured in the backup section.
 //
-// The daemon reads the [backup] section of the application
+// The handler reads the [backup] section of the application
 // configuration from the app's current-config box, so it needs no
 // configuration of its own. The databases are configured where the
 // rest of the application configuration lives, with the shape ripc
@@ -16,8 +16,17 @@
 //	pages_per_step = 100
 //	sleep_interval = "10ms"
 //
+// The scheduler runs the handler on the interval of the [scheduler.jobs]
+// entry whose job_type is "online". An entry is backed up only when its
+// frequency has elapsed:
+//
+//	[scheduler.jobs.online]
+//	job_type = "online"
+//	interval = "1m"
+//	activated = true
+//
 // A SIGHUP reload of the application configuration is visible at the
-// next daemon tick.
+// next scheduled run.
 package main
 
 import (
@@ -28,7 +37,6 @@ import (
 
 	"github.com/caasmo/restinpieces"
 	"github.com/caasmo/restinpieces-backup/onlineapi"
-	"github.com/caasmo/restinpieces/config"
 )
 
 func main() {
@@ -83,17 +91,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	// --- OnlineApi daemon setup ---
+	// --- OnlineApi job setup ---
 	// New loads and validates the application configuration from the
 	// config store, so the current-config box is already populated.
-	// The onlineapi daemon holds that box (coreApp.ConfigPointer()) and
-	// reads the backup.online configuration at every tick.
-	onlineapiDaemon := onlineapi.New[config.Config](coreApp.ConfigPointer(), nil)
+	// The handler holds that box (coreApp.ConfigPointer()) and reads the
+	// backup.online configuration at every run.
+	onlineapiHandler := onlineapi.New(coreApp.ConfigPointer(), nil)
 
-	// The daemon satisfies the restinpieces server.Daemon contract:
-	// the server starts it with Start() after the HTTP server, and
-	// stops it with Stop() during graceful shutdown.
-	srv.AddDaemon(onlineapiDaemon)
+	// Registering the handler makes the scheduler run it on the interval
+	// of the [scheduler.jobs] entry whose job_type is "online".
+	err = srv.AddJobHandler(onlineapi.JobTypeOnline, onlineapiHandler)
+	if err != nil {
+		slog.Error("failed to register the onlineapi job handler", "error", err)
+		os.Exit(1)
+	}
 
 	// Run blocks until SIGINT/SIGQUIT/SIGHUP. SIGINT/SIGQUIT shut the
 	// server and the daemons down gracefully within the configured

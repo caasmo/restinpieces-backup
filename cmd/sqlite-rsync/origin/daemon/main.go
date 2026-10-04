@@ -26,7 +26,7 @@ import (
 // Validation is minimal in the standalone path: readConfig requires a
 // listen_addr (the daemon must not guess where to bind) and the
 // library validates paths and WAL mode at sync time. Users who want
-// the full config validation can copy config.ValidateBackup from
+// the full config validation can copy the validation from
 // restinpieces here and call it after unmarshal.
 type originCfg struct {
 	Backup config.Backup `toml:"backup"`
