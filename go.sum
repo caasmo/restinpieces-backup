@@ -10,8 +10,8 @@ github.com/caasmo/go-daemon-runner v0.1.0 h1:dpSJkRwrc9BayZKF4XyRG8VoBQ/LI7oRNR1
 github.com/caasmo/go-daemon-runner v0.1.0/go.mod h1:BXog++gRS3nJEiGjNKQpA4U07uUnxMUZ+lpXMc/j+rg=
 github.com/caasmo/go-sqlite-rsync v0.8.0 h1:qiDDQKypdE9BeK+S3vqeXckbD+QNpQ3PZORikt9aq1I=
 github.com/caasmo/go-sqlite-rsync v0.8.0/go.mod h1:KaYAIsoC6hYfc0V0nMeo7i7VuHFa5169ur2w4/HXC5w=
-github.com/caasmo/restinpieces v0.39.0 h1:XmDXN+n/QAoWJqvOAK8LRt+WZ5A2RDFE0v+WPBV+bMk=
-github.com/caasmo/restinpieces v0.39.0/go.mod h1:pqgm+6Iy2A8IIyWO7P8f10QFZVbWtK6FDt5FpHK/pKo=
+github.com/caasmo/restinpieces v0.39.1 h1:kvM5iaidFZSdqOFbyz0BzPgPXT9tO5RMCbBXuXwnCcs=
+github.com/caasmo/restinpieces v0.39.1/go.mod h1:pqgm+6Iy2A8IIyWO7P8f10QFZVbWtK6FDt5FpHK/pKo=
 github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf h1:iW4rZ826su+pqaw19uhpSCzhj44qo35pNgKFGqzDKkU=
 github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf/go.mod h1:F5haX7vjVVG0kc13fIWeqUViNPyEJxv/OmvnBo0Yme4=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
