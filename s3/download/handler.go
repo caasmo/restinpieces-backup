@@ -54,6 +54,7 @@ func New(pointer *atomic.Pointer[config.Config], logger *slog.Logger) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	logger = logger.With("log_label", "llj:backup_s3_download")
 	return &Handler{cfgPointer: pointer, logger: logger}
 }
 
@@ -113,7 +114,7 @@ func (h *Handler) downloadOne(ctx context.Context, label string, entry config.Ba
 	if ok {
 		elapsed := time.Since(lastTime)
 		if elapsed < entry.MinInterval.Duration {
-			h.logger.Info("Skipping; not due yet", "s3_download", label, "next_download_in", entry.MinInterval.Duration-elapsed)
+			h.logger.Info("Skipping; not due yet", "label", label, "next_download_in", entry.MinInterval.Duration-elapsed)
 			return nil
 		}
 	}
@@ -125,7 +126,7 @@ func (h *Handler) downloadOne(ctx context.Context, label string, entry config.Ba
 		return err
 	}
 	if !found {
-		h.logger.Info("Skipping; no object found", "s3_download", label, "object_key_prefix", entry.ObjectKeyPrefix)
+		h.logger.Info("Skipping; no object found", "label", label, "object_key_prefix", entry.ObjectKeyPrefix)
 		return nil
 	}
 
@@ -135,7 +136,7 @@ func (h *Handler) downloadOne(ctx context.Context, label string, entry config.Ba
 	}
 	info, statErr := os.Stat(destPath)
 	if statErr == nil && info.Mode().IsRegular() {
-		h.logger.Info("Skipping; object already downloaded", "s3_download", label, "path", destPath)
+		h.logger.Info("Skipping; object already downloaded", "label", label, "path", destPath)
 		return nil
 	}
 
@@ -144,7 +145,7 @@ func (h *Handler) downloadOne(ctx context.Context, label string, entry config.Ba
 		return err
 	}
 
-	h.logger.Info("Downloaded object", "s3_download", label, "key", objectKey, "path", destPath)
+	h.logger.Info("Downloaded object", "label", label, "key", objectKey, "path", destPath)
 	return nil
 }
 

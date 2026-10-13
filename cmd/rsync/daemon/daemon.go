@@ -47,13 +47,13 @@ func NewBackupDaemon(client rsync.Client, destDir string, interval time.Duration
 		destDir:  destDir,
 		interval: interval,
 	}
-	// Every daemon log line carries the daemon's identity: reuse the
-	// daemon_name attribute the runner attaches to lifecycle logs. The
-	// one exception is the shared rsync package's transfer-stat line
-	// ("rsync transfer completed"), which logs via the package logger
-	// and so lacks daemon_name — accepted trade-off: the daemon is the
-	// process's only daemon, making the correlation unambiguous.
-	d.Logger = d.Logger.With("daemon_name", d.Name())
+	// Every daemon log line carries the daemon's identity: stamp the
+	// stable log_label once. The one exception is the shared rsync
+	// package's transfer-stat line ("rsync transfer completed"), which
+	// logs via the package logger and so lacks the label — accepted
+	// trade-off: the daemon is the process's only daemon, making the
+	// correlation unambiguous.
+	d.Logger = d.Logger.With("log_label", "lld:backup_rsync")
 	return d
 }
 

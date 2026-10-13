@@ -52,6 +52,7 @@ func New(pointer *atomic.Pointer[config.Config], logger *slog.Logger) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	logger = logger.With("log_label", "llj:backup_s3_upload")
 	return &Handler{cfgPointer: pointer, logger: logger}
 }
 
@@ -70,7 +71,7 @@ func (h *Handler) uploadOne(ctx context.Context, label string, entry config.Back
 
 	filePath, modTime, ok := fileToUpload(entry)
 	if !ok {
-		h.logger.Info("Skipping; no file to upload", "s3_upload", label)
+		h.logger.Info("Skipping; no file to upload", "label", label)
 		return nil
 	}
 
@@ -86,7 +87,7 @@ func (h *Handler) uploadOne(ctx context.Context, label string, entry config.Back
 		return err
 	}
 	if exists {
-		h.logger.Info("Skipping; backup already in bucket", "s3_upload", label, "key", key)
+		h.logger.Info("Skipping; backup already in bucket", "label", label, "key", key)
 		return nil
 	}
 
@@ -99,7 +100,7 @@ func (h *Handler) uploadOne(ctx context.Context, label string, entry config.Back
 		return err
 	}
 
-	h.logger.Info("Stored backup", "s3_upload", label, "key", key)
+	h.logger.Info("Stored backup", "label", label, "key", key)
 	return nil
 }
 

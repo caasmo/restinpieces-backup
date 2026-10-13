@@ -65,9 +65,9 @@ func New(client replicaclient.Client, config replicaconfig.Config, logger *slog.
 		client: client,
 		config: config,
 	}
-	// Every daemon log line carries the daemon's identity: reuse the
-	// daemon_name attribute the runner attaches to lifecycle logs.
-	d.Logger = d.Logger.With("daemon_name", d.Name())
+	// Every daemon log line carries the daemon's identity: stamp the
+	// stable log_label once.
+	d.Logger = d.Logger.With("log_label", "lld:backup_sqlitersync_replica")
 	return d
 }
 
