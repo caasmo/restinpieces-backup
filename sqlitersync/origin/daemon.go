@@ -58,7 +58,7 @@ func New[T OriginConfig](pointer *atomic.Pointer[T], logger *slog.Logger) *Origi
 		Base:       daemon.NewBase("OriginDaemon", logger),
 		cfgPointer: pointer,
 	}
-	d.Logger = d.Logger.With("daemon_name", d.Name())
+	d.Logger = d.Logger.With("log_label", "lld:backup_sqlitersync_origin")
 	return d
 }
 

@@ -54,5 +54,9 @@ func (s *VacuumStrategy) Copy(ctx context.Context, srcConn *sql.Conn, destPath s
 // visible at the next scheduled run. A nil logger falls back to
 // slog.Default().
 func New(pointer *atomic.Pointer[config.Config], logger *slog.Logger) *localcopy.Handler {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger = logger.With("log_label", "llj:backup_vacuum")
 	return localcopy.NewHandler(&VacuumStrategy{cfgPointer: pointer}, logger)
 }

@@ -114,6 +114,7 @@ func New(pointer *atomic.Pointer[config.Config], logger *slog.Logger) *localcopy
 	if logger == nil {
 		logger = slog.Default()
 	}
+	logger = logger.With("log_label", "llj:backup_onlineapi")
 	return localcopy.NewHandler(&OnlineApiStrategy{cfgPointer: pointer, logger: logger}, logger)
 }
 
