@@ -235,9 +235,9 @@ func TestHandler_EncryptsWithRecipient(t *testing.T) {
 	server, bucket := startFakeS3(t)
 	dir := t.TempDir()
 	file := writeBackup(t, dir, "app.db", []byte("plaintext"))
-	identity, err := age.GenerateX25519Identity()
+	identity, err := age.GenerateHybridIdentity()
 	if err != nil {
-		t.Fatalf("GenerateX25519Identity: %v", err)
+		t.Fatalf("GenerateHybridIdentity: %v", err)
 	}
 
 	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{
@@ -281,9 +281,9 @@ func TestHandler_EncryptsWithRequiredContentLength(t *testing.T) {
 	server, bucket := startFakeS3(t)
 	dir := t.TempDir()
 	file := writeBackup(t, dir, "app.db", []byte("plaintext"))
-	identity, err := age.GenerateX25519Identity()
+	identity, err := age.GenerateHybridIdentity()
 	if err != nil {
-		t.Fatalf("GenerateX25519Identity: %v", err)
+		t.Fatalf("GenerateHybridIdentity: %v", err)
 	}
 
 	cfg := testConfigFor(server.URL, config.BackupS3UploadEntry{

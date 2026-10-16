@@ -239,7 +239,7 @@ func TestFindAgeEncryptedFiles_ListsOnlyAge(t *testing.T) {
 }
 
 func TestDecrypt_DecryptsAgeFiles(t *testing.T) {
-	identity, err := age.GenerateX25519Identity()
+	identity, err := age.GenerateHybridIdentity()
 	if err != nil {
 		t.Fatal(err)
 	}

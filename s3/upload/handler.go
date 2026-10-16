@@ -234,7 +234,7 @@ func (h *Handler) uploadObject(ctx context.Context, bucket, key, path string) er
 // unbuffered so memory stays flat. Producer errors travel through
 // CloseWithError, so a failed read aborts the request.
 func (h *Handler) uploadObjectEncrypted(ctx context.Context, bucket, key, path, recipient string) error {
-	recipientID, err := age.ParseX25519Recipient(recipient)
+	recipientID, err := age.ParseHybridRecipient(recipient)
 	if err != nil {
 		return fmt.Errorf("failed to parse age recipient: %w", err)
 	}
