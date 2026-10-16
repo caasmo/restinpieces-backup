@@ -3,20 +3,21 @@ module github.com/caasmo/restinpieces-backup
 go 1.25.0
 
 require (
-	filippo.io/age v1.2.1
+	filippo.io/age v1.3.2
 	github.com/caasmo/go-daemon-runner v0.1.0
 	github.com/caasmo/go-sqlite-rsync v0.8.0
-	github.com/caasmo/restinpieces v0.41.5
+	github.com/caasmo/restinpieces v0.42.0
 	github.com/gokrazy/rsync v0.3.4
 	github.com/landlock-lsm/go-landlock v0.9.0
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/pkg/sftp v1.13.9
-	golang.org/x/crypto v0.46.0
+	golang.org/x/crypto v0.55.0
 	golang.org/x/sync v0.22.0
 	modernc.org/sqlite v1.57.0
 )
 
 require (
+	filippo.io/hpke v0.4.0 // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/OneOfOne/xxhash v1.2.8 // indirect
 	github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf // indirect
